@@ -13,9 +13,16 @@ process.env.DATABASE_URL = url.href;
 
 const pool = createPool({ databaseUrl: url.href });
 try {
-  const { rows } = await pool.query('SELECT ssl, version FROM pg_stat_ssl WHERE pid=pg_backend_pid()');
-  if (rows[0]?.ssl !== true) throw new Error('Production database TLS is required.');
-  console.log('Production database TLS verified:', rows[0].version);
+  const client = await pool.connect();
+  try {
+    // Providers can terminate TLS at their proxy. pg_stat_ssl describes the
+    // internal Postgres connection, not the client-to-provider TLS boundary.
+    const transport = client.connection.stream;
+    if (transport.encrypted !== true || transport.authorized !== true) {
+      throw new Error('Production database TLS and certificate verification are required.');
+    }
+    console.log('Production database TLS and certificate verified:', transport.getProtocol());
+  } finally { client.release(); }
 } finally { await pool.end(); }
 
 await import('./migrate.mjs');
