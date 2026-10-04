@@ -164,8 +164,12 @@ function mascot() {
 function proposalActivities(p) {
   return Array.isArray(p?.activities) && p.activities.length ? [...p.activities] : [];
 }
+function detailChoices(value) {
+  return (Array.isArray(value) ? value : [value]).filter((item) => typeof item === "string" && item.length > 0);
+}
 function activityDetail(p, activity) {
-  return p?.preferences?.details?.[activity] ?? (p?.activity === activity ? p?.preferences?.detail || "" : "");
+  const value = p?.preferences?.details?.[activity] ?? (p?.activity === activity ? p?.preferences?.detail || "" : "");
+  return detailChoices(value).join("、");
 }
 function activitySummary(x) {
   const p = x.proposal, range = proposalActivities(p), pendingRange = range.length > 0 && !p.activity;

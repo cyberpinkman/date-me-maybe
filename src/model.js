@@ -13,6 +13,13 @@ const InviteModel = (() => {
   const object = (value) => !!value && typeof value === "object" && !Array.isArray(value);
   const ranged = (proposal) => !!proposal && provided(proposal, "activities");
   const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  const detailChoices = (value) => {
+    if (typeof value === "string") return value.trim() ? [value.trim()] : [];
+    if (!Array.isArray(value) || value.length > 9 ||
+        value.some((detail) => typeof detail !== "string" || !detail.trim()))
+      fail("INVALID_INPUT", "每项活动最多选九个小安排，也可以先留空");
+    return [...new Set(value.map((detail) => detail.trim()))].sort();
+  };
 
   // An activity range is the guest's consent, not a finalized arrangement.
   // Legacy proposals retain their shape. Each range detail belongs to its activity.
@@ -50,12 +57,12 @@ const InviteModel = (() => {
       (previous.activity && priorPreferences.detail ? { [previous.activity]: priorPreferences.detail } : {});
     const patchDetails = preferences.details ?? {};
     if (!object(priorDetails) || !object(patchDetails) ||
-        Object.values(priorDetails).some((detail) => typeof detail !== "string") ||
-        Object.entries(patchDetails).some(([activity, detail]) => !activities.includes(activity) || typeof detail !== "string"))
+        Object.keys(patchDetails).some((activity) => !activities.includes(activity)))
       fail("INVALID_INPUT", "请把小安排填写在对应的活动里");
+    for (const detail of Object.values(priorDetails)) detailChoices(detail);
     const details = Object.fromEntries(activities.map((activity) => [
-      activity, provided(patchDetails, activity) ? patchDetails[activity]
-        : provided(priorDetails, activity) ? priorDetails[activity] : "",
+      activity, detailChoices(provided(patchDetails, activity) ? patchDetails[activity]
+        : provided(priorDetails, activity) ? priorDetails[activity] : []),
     ]));
     // A legacy choice must not become the host's final choice for a new range.
     let activity = !provided(patch, "activity") && ranged(patch) && !ranged(previous) ? "" : value("activity");
@@ -66,12 +73,12 @@ const InviteModel = (() => {
       if (typeof preferences.detail !== "string" || (!activity && preferences.detail))
         fail("INVALID_INPUT", "请把小安排填写在对应的活动里");
       // The old field is a display alias, not an alternative way to change consent.
-      if (activity && preferences.detail !== details[activity])
+      if (activity && preferences.detail !== details[activity].join("、"))
         fail("INVALID_INPUT", "小安排与所选活动不一致");
     }
     return {
       ...common, activities, activity,
-      preferences: { hints: normalizedHints, details, detail: activity ? details[activity] : "" },
+      preferences: { hints: normalizedHints, details, detail: activity ? details[activity].join("、") : "" },
     };
   }
   const scheduleComplete = (p) => !!(p && [p.date, p.time, p.place].every(

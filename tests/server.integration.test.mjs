@@ -400,7 +400,7 @@ test('PostgreSQL + HTTP: authentication, invitation ownership, guest capabilitie
     assert.deepEqual(await getOwner(a, invitationA.id), latestBeforeReplay, 'Replaying history must neither change nor roll back the latest stored invitation');
   });
 
-  await t.test('an existing fixed invitation accepts the new guest activity range without inheriting a final choice', async () => {
+  await t.test('legacy invitations and persisted scalar details remain readable and can finalize into detail sets', async () => {
     const legacy = succeeds(await c.post('/api/invitations', { draft: draftC, requestId: randomUUID() }), 'create legacy invitation').invitation;
     const token = new URL(legacy.shareUrl).pathname.split('/').at(-1);
     const response = succeeds(await d.post(`${guestPath(token)}/actions`, {
@@ -409,9 +409,26 @@ test('PostgreSQL + HTTP: authentication, invitation ownership, guest capabilitie
     }), 'new guest flow responds to legacy invitation').invitation;
     assert.equal(response.mode, 'fixed');
     assert.deepEqual(response.proposal.activities, ['散个步']);
+    assert.deepEqual(response.proposal.preferences.details, { '散个步': ['沿着河边走'] }, 'An old client scalar is accepted and persisted as a set');
     assert.equal(response.proposal.activity, '', 'Even a one-item range requires the host to finalize');
     assert.equal(response.approvals.host, null);
     fails(await c.post(`${ownerPath(legacy.id)}/actions`, { type: 'confirm', version: response.version, requestId: randomUUID() }), 422, 'legacy invitation cannot bypass activity selection');
+
+    // Reproduce the JSONB representation already stored by v0.3, scoped to
+    // this new fixture. Reading must remain compatible without a migration.
+    const oldState = (await pool.query('SELECT state FROM invitations WHERE id=$1', [legacy.id])).rows[0].state;
+    oldState.proposal.preferences.details['散个步'] = '沿着河边走';
+    await pool.query('UPDATE invitations SET state=$1 WHERE id=$2', [oldState, legacy.id]);
+    assert.equal((await getOwner(c, legacy.id)).proposal.preferences.details['散个步'], '沿着河边走');
+    assert.equal(succeeds(await d.get(guestPath(token)), 'read persisted scalar as guest').invitation.proposal.preferences.details['散个步'], '沿着河边走');
+    const finalize = { type: 'finalize', version: response.version, requestId: randomUUID(), proposal: { activity: '散个步' } };
+    const finalResponse = await c.post(`${ownerPath(legacy.id)}/actions`, finalize);
+    const final = succeeds(finalResponse, 'finalize an old persisted scalar snapshot').invitation;
+    assert.deepEqual(final.proposal.preferences.details, { '散个步': ['沿着河边走'] });
+    assert.equal(final.proposal.preferences.detail, '沿着河边走');
+    assert.deepEqual(final.approvals, { host: final.version, guest: final.version });
+    assert.deepEqual(await getOwner(c, legacy.id), final, 'The canonical set survives a separate database read');
+    assert.deepEqual(await c.post(`${ownerPath(legacy.id)}/actions`, finalize), finalResponse, 'An old snapshot finalization replays its full canonical response');
   });
 
   await t.test('open invitations enforce guest scope and atomically finalize one accepted activity', async () => {
@@ -426,13 +443,17 @@ test('PostgreSQL + HTTP: authentication, invitation ownership, guest capabilitie
     const proposal = {
       date: futureDate(9), time: '18:30', place: '  咖啡店门口  ', activity: '',
       activities: ['喝杯咖啡', '吃点好吃的', '喝杯咖啡'],
-      preferences: { hints: ['想多待一会儿'], details: { '喝杯咖啡': '安静的小店', '吃点好吃的': '西餐' } },
+      preferences: { hints: ['想多待一会儿'], details: { '喝杯咖啡': ['有阳光的窗边', ' 安静的小店 ', '安静的小店'], '吃点好吃的': ['西餐', '日料'] } },
     };
+    const expectedDetails = { '喝杯咖啡': ['安静的小店', '有阳光的窗边'], '吃点好吃的': ['日料', '西餐'] };
     const respond = patch => ({ type: 'respond', version: created.version, requestId: randomUUID(), proposal: { ...proposal, ...patch } });
     for (const patch of [
       { place: '' }, { date: '2000-01-01' }, { activities: [] },
       { activities: ['不在列表的活动'] }, { activity: '喝杯咖啡' },
       { preferences: { hints: [], details: { '散个步': '公园慢慢走' } } },
+      { preferences: { hints: [], details: { '喝杯咖啡': ['安静的小店', '火锅'] } } },
+      { preferences: { hints: [], details: { '喝杯咖啡': ['安静的小店', ''] } } },
+      { preferences: { hints: [], details: { '喝杯咖啡': Array(10).fill('安静的小店') } } },
     ]) fails(await b.post(guestActions, respond(patch)), 422, 'invalid guest arrangement');
     assert.deepEqual(await getOwner(a, created.id), created, 'Invalid arrangements do not advance state');
 
@@ -442,7 +463,11 @@ test('PostgreSQL + HTTP: authentication, invitation ownership, guest capabilitie
     assert.deepEqual(new Set(guest.proposal.activities), new Set(['喝杯咖啡', '吃点好吃的']));
     assert.equal(guest.proposal.activities.length, 2);
     assert.equal(guest.proposal.activity, '');
-    assert.deepEqual(guest.proposal.preferences.details, proposal.preferences.details);
+    assert.deepEqual(guest.proposal.preferences.details, expectedDetails);
+    assert.equal(guest.proposal.preferences.detail, '');
+    assert.deepEqual((await getOwner(a, created.id)).proposal.preferences.details, expectedDetails, 'Sets survive owner reads');
+    assert.deepEqual(succeeds(await b.get(guestPath(token)), 'read guest detail sets').invitation.proposal.preferences.details, expectedDetails, 'Sets survive anonymous reads');
+    assert.deepEqual((await pool.query('SELECT state FROM invitations WHERE id=$1', [created.id])).rows[0].state.proposal.preferences.details, expectedDetails, 'The database stores canonical arrays, not flattened labels');
     assert.deepEqual(guest.approvals, { host: null, guest: guest.version });
     const selection = activity => ({ type: 'finalize', version: guest.version, requestId: randomUUID(), proposal: { activity } });
     const shortcut = await a.post(hostActions, { type: 'confirm', version: guest.version, requestId: randomUUID() });
@@ -452,10 +477,12 @@ test('PostgreSQL + HTTP: authentication, invitation ownership, guest capabilitie
     fails(await c.post(hostActions, selection('喝杯咖啡')), 404, 'another owner cannot finalize');
     fails(await a.post(hostActions, selection('散个步')), 422, 'host cannot select outside the guest range');
     fails(await a.post(hostActions, { ...selection('喝杯咖啡'), proposal: { activity: '喝杯咖啡', place: '换个地点' } }), 422, 'finalize cannot change other fields');
+    fails(await a.post(hostActions, { ...selection('喝杯咖啡'), proposal: { activity: '喝杯咖啡', preferences: { details: { '喝杯咖啡': ['咖啡加甜品'] } } } }), 422, 'finalize cannot alter accepted details');
     for (const patch of [
       { place: '新地点' },
       { activity: '喝杯咖啡', activities: ['喝杯咖啡', '散个步'] },
-      { activity: '喝杯咖啡', preferences: { details: { '喝杯咖啡': '咖啡加甜品', '吃点好吃的': '西餐' } } },
+      { activity: '喝杯咖啡', preferences: { details: { '喝杯咖啡': ['安静的小店'], '吃点好吃的': expectedDetails['吃点好吃的'] } } },
+      { activity: '喝杯咖啡', preferences: { details: { '喝杯咖啡': [...expectedDetails['喝杯咖啡'], '咖啡加甜品'], '吃点好吃的': expectedDetails['吃点好吃的'] } } },
     ]) fails(await a.post(hostActions, { type: 'propose', version: guest.version, requestId: randomUUID(), proposal: patch }), 422, 'host proposal must honor the guest range');
     assert.equal((await getOwner(a, created.id)).version, guest.version);
 
@@ -470,15 +497,19 @@ test('PostgreSQL + HTTP: authentication, invitation ownership, guest capabilitie
     assert.equal(final.version, guest.version + 1);
     assert.equal(final.proposal.activity, selections[winningIndex].proposal.activity);
     assert.deepEqual(final.proposal.preferences.details, guest.proposal.preferences.details);
+    assert.equal(final.proposal.preferences.detail, expectedDetails[final.proposal.activity].join('、'), 'The display alias preserves all preferences for the selected activity');
+    assert.deepEqual((await getOwner(a, created.id)).proposal, final.proposal);
+    assert.deepEqual(succeeds(await b.get(guestPath(token)), 'read finalized guest detail sets').invitation.proposal, final.proposal);
     assert.deepEqual(final.approvals, { host: final.version, guest: final.version });
     fails(await b.post(guestActions, { type: 'confirm', version: guest.version, requestId: randomUUID() }), 409, 'old guest version cannot confirm a newer plan');
     fails(await a.post(hostActions, { ...selections[winningIndex], proposal: { activity: selections[1 - winningIndex].proposal.activity } }), 409, 'finalization request id cannot select another activity');
 
     const revised = succeeds(await b.post(guestActions, {
       type: 'propose', version: final.version, requestId: randomUUID(),
-      proposal: { activities: ['散个步'], activity: '', preferences: { details: { '散个步': '公园慢慢走' } } },
+      proposal: { activities: ['散个步'], activity: '', preferences: { details: { '散个步': [] } } },
     }), 'guest may revise their own activity range').invitation;
     assert.equal(revised.proposal.activity, '');
+    assert.deepEqual(revised.proposal.preferences.details, { '散个步': [] }, 'Skipping a preference is an empty set');
     assert.equal(revised.approvals.host, null);
     assert.deepEqual(await a.post(hostActions, selections[winningIndex]), finalResponse, 'Finalization retries retain their first response after later changes');
     assert.deepEqual(await getOwner(a, created.id), { ...revised, shareUrl: created.shareUrl });
@@ -488,6 +519,7 @@ test('PostgreSQL + HTTP: authentication, invitation ownership, guest capabilitie
       proposal: { activity: '散个步', time: '20:15', place: '河边入口' },
     }), 'host may choose an allowed activity while proposing a different arrangement').invitation;
     assert.deepEqual(changed.proposal.activities, ['散个步']);
+    assert.equal(changed.proposal.preferences.detail, '');
     assert.equal(changed.approvals.host, changed.version);
     assert.equal(changed.approvals.guest, null, 'A changed time or place needs guest approval');
     const agreed = succeeds(await b.post(guestActions, { type: 'confirm', version: changed.version, requestId: randomUUID() }), 'guest accepts the revised selected plan').invitation;

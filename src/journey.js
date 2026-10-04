@@ -40,7 +40,7 @@ const sceneDetails = {
     ],
   },
   散个步: {
-    title: "想和你，走哪一段？",
+    title: "想和你，去哪儿走走？",
     note: "路线可以短一点，聊天可以久一点。",
     cta: "就这样慢慢走",
     items: [
@@ -51,8 +51,8 @@ const sceneDetails = {
     ],
   },
   看场电影: {
-    title: "这次，想看哪一种？",
-    note: "先选个类型，具体场次我们再商量。",
+    title: "这次，想看点什么？",
+    note: "把想看的类型先记下，具体场次我们再商量。",
     cta: "就看这个类型",
     items: [
       ["☺", "轻松喜剧"],
@@ -116,7 +116,7 @@ function guestProposal() {
     activity: "",
     preferences: {
       hints: [...g.hints],
-      details: Object.fromEntries(g.activities.map((activity) => [activity, g.details[activity] || ""])),
+      details: Object.fromEntries(g.activities.map((activity) => [activity, detailChoices(g.details[activity])])),
     },
   };
 }
@@ -171,7 +171,8 @@ function sceneContent(x, g) {
   if (g.scene === "detail") {
     const activity = g.activities[g.detailIndex], config = sceneDetails[activity];
     const last = g.detailIndex === g.activities.length - 1;
-    return `<div class="card-top"><span>THE LITTLE DETAILS</span><span class="mini-heart">♡</span></div><div class="scene-symbol">${icon(activities.find((a) => a[0] === activity)?.[1] || "heart", 32)}</div><h2>${config.title}</h2><p class="personal-message">${config.note}<br>还没想好，也可以交给对方。</p>${g.activities.length > 1 ? `<div class="detail-tabs" aria-label="每个小安排的偏好">${g.activities.map((item, index) => `<button class="detail-tab ${index === g.detailIndex ? "selected" : ""}" data-action="journey-detail-tab" data-index="${index}" aria-pressed="${index === g.detailIndex}">${esc(item)}${g.details[item] ? " ✓" : ""}</button>`).join("")}</div>` : ""}<div class="scene-details ${config.items.length === 9 ? "nine" : "four"}">${config.items.map((item, i) => `<button class="detail-choice ${g.details[activity] === item[1] ? "selected" : ""}" data-action="journey-detail" data-index="${i}" aria-pressed="${g.details[activity] === item[1]}"><span class="detail-emoji" aria-hidden="true">${item[0]}</span><span>${item[1]}</span><i class="radio"></i></button>`).join("")}</div><div class="scene-bottom">${sceneButton(last ? (g.details[activity] ? "把小心思放在一起" : "这个听你的，看看小安排") : (g.details[activity] ? "收好，再看下一个" : "这个听你的，再看下一个"), "journey-next")}</div>`;
+    const selectedDetails = detailChoices(g.details[activity]);
+    return `<div class="card-top"><span>THE LITTLE DETAILS</span><span class="mini-heart">♡</span></div><div class="scene-symbol">${icon(activities.find((a) => a[0] === activity)?.[1] || "heart", 32)}</div><h2>${config.title}</h2><p class="personal-message">${config.note}<br>喜欢的都可以选，没想好也可以交给对方。</p>${g.activities.length > 1 ? `<div class="detail-tabs" aria-label="每个小安排的偏好">${g.activities.map((item, index) => `<button class="detail-tab ${index === g.detailIndex ? "selected" : ""}" data-action="journey-detail-tab" data-index="${index}" aria-pressed="${index === g.detailIndex}">${esc(item)}${detailChoices(g.details[item]).length ? " ✓" : ""}</button>`).join("")}</div>` : ""}<div class="scene-details ${config.items.length === 9 ? "nine" : "four"}">${config.items.map((item, i) => `<button class="detail-choice ${selectedDetails.includes(item[1]) ? "selected" : ""}" data-action="journey-detail" data-index="${i}" aria-pressed="${selectedDetails.includes(item[1])}"><span class="detail-emoji" aria-hidden="true">${item[0]}</span><span>${item[1]}</span><i class="multi-check" aria-hidden="true">${selectedDetails.includes(item[1]) ? "✓" : ""}</i></button>`).join("")}</div><div class="scene-bottom">${sceneButton(last ? (selectedDetails.length ? "把小心思放在一起" : "这个听你的，看看小安排") : (selectedDetails.length ? "收好，再看下一个" : "这个听你的，再看下一个"), "journey-next")}</div>`;
   }
   const proposal = guestProposal();
   return `<div class="card-top"><span>OUR LITTLE PROMISE</span><span class="mini-heart">♡</span></div><div class="mini-mascot">${mascot()}</div><h2>我的小心思，<br>都告诉你啦。</h2><p class="personal-message">时间和愿意一起做的事，都放在这里了。</p><div class="journey-place-field"><label class="label" for="journey-place">想在哪里碰面？</label><input id="journey-place" data-journey-field="place" maxlength="60" value="${esc(g.place)}" placeholder="店名、地址或好找的集合点"><p class="hint">留个好找的地方，让这次见面更近一点。</p></div><div class="journey-ticket">${ticket({ ...x, proposal })}</div><p class="scene-submit-note">这些都是我愿意的，这次一起做什么，等 ${esc(x.from)} 来敲定。</p><div class="error" id="journey-error" role="alert"></div><div class="scene-bottom">${sceneButton("把小心思交给你", "journey-submit", !proposal.place)}</div>`;
@@ -257,7 +258,10 @@ async function journeyAction(a, el) {
   } else if (a === "journey-detail") {
     const activity = g.activities[g.detailIndex];
     const detail = sceneDetails[activity].items[Number(el.dataset.index)][1];
-    g.details[activity] = g.details[activity] === detail ? "" : detail;
+    const selected = detailChoices(g.details[activity]);
+    g.details[activity] = selected.includes(detail)
+      ? selected.filter((item) => item !== detail)
+      : [...selected, detail];
   } else if (a === "journey-detail-tab") {
     const index = Number(el.dataset.index);
     if (Number.isInteger(index) && index >= 0 && index < g.activities.length) g.detailIndex = index;

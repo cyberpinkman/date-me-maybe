@@ -40,7 +40,7 @@ function fixture({ guest = false, invitation, signedIn = true } = {}) {
 const schedule = { date: "2099-10-07", time: "18:30", place: "湖边咖啡店" };
 const ranged = () => Model.transition(Model.create({ id: "range-one", from: "小宇", to: "小鹿", message: "想见你", mode: "open" }), {
   type: "respond", role: "guest", version: 1,
-  proposal: { ...schedule, activities: ["吃点好吃的", "喝杯咖啡"], activity: "", preferences: { hints: ["有点暧昧"], details: { 吃点好吃的: "火锅", 喝杯咖啡: "安静的小店" } } },
+  proposal: { ...schedule, activities: ["吃点好吃的", "喝杯咖啡"], activity: "", preferences: { hints: ["有点暧昧"], details: { 吃点好吃的: ["火锅", "烤肉"], 喝杯咖啡: ["安静的小店", "有阳光的窗边"] } } },
 });
 
 test("creating after sign-in keeps the written invitation and sends no sender arrangement", async () => {
@@ -81,8 +81,25 @@ test("seven recipient scenes retain the range and optional per-activity details 
   await f.act("journey-activity", { activity: "喝杯咖啡" });
   await f.act("journey-next"); scenes.push(f.run("guestJourney.scene"));
   await f.act("journey-detail", { index: "3" }); // food -> hotpot
-  await f.act("journey-next"); // coffee can remain unspecified
+  await f.act("journey-detail", { index: "1" }); // also barbecue
+  assert.deepEqual(f.data('guestJourney.details["吃点好吃的"]'), ["火锅", "烤肉"]);
+  await f.act("journey-detail", { index: "3" });
+  assert.deepEqual(f.data('guestJourney.details["吃点好吃的"]'), ["烤肉"]);
+  await f.act("journey-detail", { index: "3" });
+  assert.match(f.run("journeyView(current())"), /data-action="journey-detail" data-index="1" aria-pressed="true"/);
+  assert.match(f.run("journeyView(current())"), /data-action="journey-detail" data-index="3" aria-pressed="true"/);
+  await f.act("journey-detail-tab", { index: "1" });
+  await f.act("journey-detail", { index: "0" });
+  await f.act("journey-detail", { index: "1" });
+  assert.deepEqual(f.data('guestJourney.details["喝杯咖啡"]'), ["安静的小店", "咖啡加甜品"]);
+  await f.act("journey-detail-tab", { index: "0" });
+  assert.deepEqual(f.data('guestJourney.details["吃点好吃的"]'), ["烤肉", "火锅"]);
+  await f.act("journey-next");
   assert.equal(f.run("guestJourney.detailIndex"), 1);
+  await f.act("journey-detail", { index: "0" });
+  await f.act("journey-detail", { index: "1" }); // coffee can remain unspecified
+  assert.deepEqual(f.data('guestJourney.details["喝杯咖啡"]'), []);
+  assert.doesNotMatch(f.run("journeyView(current())"), /喝杯咖啡 ✓/);
   await f.act("journey-next"); scenes.push(f.run("guestJourney.scene"));
   assert.deepEqual(scenes, ["invite", "surprise", "time", "hints", "activity", "detail", "review"]);
   assert.equal(f.writes.length, 0);
@@ -92,7 +109,7 @@ test("seven recipient scenes retain the range and optional per-activity details 
   assert.match(f.nodes.get("#journey-error").textContent, /地点/);
   await f.act("journey-back");
   assert.equal(f.run("guestJourney.detailIndex"), 1);
-  assert.equal(f.run('guestJourney.details["吃点好吃的"]'), "火锅");
+  assert.deepEqual(f.data('guestJourney.details["吃点好吃的"]'), ["烤肉", "火锅"]);
   await f.act("journey-next");
   f.run(`guestJourney.place=${JSON.stringify(schedule.place)}`);
   await f.act("journey-submit");
@@ -103,7 +120,7 @@ test("seven recipient scenes retain the range and optional per-activity details 
   assert.equal(role, undefined); assert.equal(ownerId, undefined);
   assert.deepEqual(proposal.activities, ["吃点好吃的", "喝杯咖啡"]);
   assert.equal(proposal.activity, "");
-  assert.deepEqual(proposal.preferences.details, { 吃点好吃的: "火锅", 喝杯咖啡: "" });
+  assert.deepEqual(proposal.preferences.details, { 吃点好吃的: ["烤肉", "火锅"], 喝杯咖啡: [] });
   assert.equal(proposal.place, schedule.place);
   assert.equal(f.run("InviteModel.status(current())"), "host_review");
 });
@@ -123,32 +140,45 @@ test("deselected activity details stay out of the response and old suggestions k
     await f.act("journey-activity", { activity: "吃点好吃的" });
     const p = f.data("guestProposal()");
     assert.deepEqual(p.activities, ["喝杯咖啡"]);
-    assert.deepEqual(p.preferences.details, { 喝杯咖啡: "安静的小店" });
+    assert.deepEqual(p.preferences.details, { 喝杯咖啡: ["安静的小店"] });
     f.run('guestJourney.scene="review"');
     assert.match(f.run("journeyView(current())"), /id="journey-place"[^>]*value="原来的公园"/);
   }
 });
 
-test("the sender finalizes one authorized activity and exported summaries never present the full range as confirmed", async () => {
+test("the sender finalizes one activity while every summary preserves all of its acceptable preferences", async () => {
   const f = fixture({ invitation: ranged() });
   assert.equal(f.run("selectedHostActivity(current())"), "");
   assert.match(f.run("resultActions(current())"), /data-action="finalize" disabled/);
+  assert.match(f.run("hostActivityChoices(current())"), /火锅、烤肉/);
+  await f.act("change");
+  assert.match(f.nodes.get("#modal-root").innerHTML, /吃点好吃的 · 火锅、烤肉/);
+  await f.act("close-modal");
   for (const render of ["ticket", "listView", "invitationText", "cardRows"]) {
     const output = f.run(render === "listView" ? "listView()" : render === "cardRows" ? "JSON.stringify(cardRows(current()))" : `${render}(current())`);
     assert.match(output, /这些都愿意/);
-    assert.match(output, /火锅/); assert.match(output, /安静的小店/);
+    assert.match(output, /火锅、烤肉/); assert.match(output, /安静的小店、有阳光的窗边/);
   }
-  await f.act("host-activity", { activity: "喝杯咖啡" });
+  await f.act("host-activity", { activity: "吃点好吃的" });
   assert.equal(f.writes.length, 0);
   await f.act("finalize");
   assert.equal(f.writes[0].body.type, "finalize");
-  assert.deepEqual(f.writes[0].body.proposal, { activity: "喝杯咖啡" });
+  assert.deepEqual(f.writes[0].body.proposal, { activity: "吃点好吃的" });
   assert.equal(f.run("InviteModel.status(current())"), "confirmed");
   for (const render of ["ticket", "listView", "invitationText", "cardRows"]) {
     const output = f.run(render === "listView" ? "listView()" : render === "cardRows" ? "JSON.stringify(cardRows(current()))" : `${render}(current())`);
-    assert.doesNotMatch(output, /这些都愿意|火锅/);
-    assert.match(output, /喝杯咖啡.*安静的小店/);
+    assert.doesNotMatch(output, /这些都愿意|安静的小店|有阳光的窗边/);
+    assert.match(output, /吃点好吃的.*火锅、烤肉/);
   }
+});
+
+test("the shared preference formatter reads previous scalar values and new arrays, including empty choices", () => {
+  const f = fixture();
+  for (const [value, expected] of [["火锅", "火锅"], [["火锅", "烤肉"], "火锅、烤肉"], ["", ""], [[], ""]]) {
+    assert.equal(f.run(`activityDetail({preferences:{details:{"吃点好吃的":${JSON.stringify(value)}}}}, "吃点好吃的")`), expected);
+  }
+  assert.equal(f.run('activityDetail({activity:"吃点好吃的",preferences:{detail:"火锅"}}, "吃点好吃的")'), "火锅");
+  assert.equal(f.run('activityDetail({activity:"吃点好吃的",preferences:{detail:"火锅"}}, "喝杯咖啡")'), "");
 });
 
 test("choice is scoped to invitation revision, and a revised finalized arrangement uses ordinary confirmation", async () => {

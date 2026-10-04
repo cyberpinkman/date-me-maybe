@@ -1831,7 +1831,8 @@ body[data-audience="guest"] .brand { cursor: default; }
 .review-message { white-space: pre-line; }
 .activity-summary-item { display: block; }
 .activity-summary-item + .activity-summary-item { margin-top: 7px; }
-.scene-activity .multi-check {
+.scene-activity .multi-check,
+.detail-choice .multi-check {
   position: absolute;
   right: 12px;
   top: 14px;
@@ -1844,7 +1845,9 @@ body[data-audience="guest"] .brand { cursor: default; }
   font-size: 12px;
   font-style: normal;
 }
-.scene-activity.selected .multi-check { background: #608265; color: #fff; border-color: #608265; }
+.scene-activity.selected .multi-check,
+.detail-choice.selected .multi-check { background: #608265; color: #fff; border-color: #608265; }
+.detail-choice .multi-check { top: 8px; right: 8px; width: 15px; height: 15px; font-size: 11px; }
 .detail-tabs { display: flex; flex-wrap: wrap; gap: 7px; margin: 0 0 14px; justify-content: center; }
 .detail-tab {
   border: 1px solid #c7aab6;

@@ -7,7 +7,7 @@ const openDraft = { from: ' A ', to: ' B ', tone: 'playful', message: '一起见
 const proposal = (patch = {}) => ({
   date, time: '18:30', place: '咖啡店门口', activity: '',
   activities: ['喝杯咖啡', '吃点好吃的'],
-  preferences: { hints: ['轻松随意就好'], details: { '喝杯咖啡': '安静的小店', '吃点好吃的': '' } },
+  preferences: { hints: ['轻松随意就好'], details: { '喝杯咖啡': ['安静的小店', '有阳光的窗边'], '吃点好吃的': [] } },
   ...patch,
 });
 const invalid = error => error.status === 422 && typeof error.code === 'string';
@@ -36,13 +36,38 @@ test('proposal validation binds each detail to its selected activity and preserv
     { date: '2099-02-30' }, { date: '2000-01-01' }, { time: '24:00' },
     { preferences: { hints: [], details: { '散个步': '公园慢慢走' } } },
     { preferences: { hints: [], details: { '喝杯咖啡': '火锅' } } },
-    { preferences: { hints: [], details: { '喝杯咖啡': ['安静的小店'] } } },
     { preferences: { hints: [], detail: '西餐', details: {} } },
   ]) assert.throws(() => validateProposal(proposal(patch), 'Asia/Shanghai'), invalid);
   assert.throws(() => validateProposal(proposal(), 'Asia/Shanghai', {
     preferences: { details: { '散个步': '公园慢慢走' } },
   }), invalid, 'A normalizer cannot silently discard an invalid incoming detail');
   assert.doesNotThrow(() => validateProposal({ date, time: '18:30', place: '', activity: '喝杯咖啡', preferences: { hints: [], detail: '' } }, 'Asia/Shanghai'));
+});
+
+test('detail sets validate raw members before normalization and keep the selected display alias exact', async () => {
+  const { validateEvent, validateProposal } = await validation;
+  const canonical = proposal({ activity: '喝杯咖啡', preferences: {
+    hints: [], details: { '喝杯咖啡': ['安静的小店', '有阳光的窗边'], '吃点好吃的': [] },
+    detail: '安静的小店、有阳光的窗边',
+  } });
+  assert.doesNotThrow(() => validateProposal(canonical, 'Asia/Shanghai'));
+  for (const selection of [[], ['安静的小店'], [' 安静的小店 ', '安静的小店'], Array(9).fill('安静的小店'), ' 安静的小店 ', '', '   ']) {
+    const input = proposal({ preferences: { hints: [], details: { '喝杯咖啡': selection } } });
+    assert.doesNotThrow(() => validateEvent({ type: 'respond', version: 1, requestId: randomUUID(), proposal: input }, 'guest'));
+    assert.doesNotThrow(() => validateProposal(input, 'Asia/Shanghai'));
+  }
+  for (const selection of [null, undefined, {}, 1, '火锅', [''], ['   '], ['火锅'], [1], ['安静的小店', null], Array(10).fill('安静的小店')]) {
+    const input = proposal({ preferences: { hints: [], details: { '喝杯咖啡': selection } } });
+    assert.throws(() => validateEvent({ type: 'respond', version: 1, requestId: randomUUID(), proposal: input }, 'guest'), invalid);
+    assert.throws(() => validateProposal(input, 'Asia/Shanghai'), invalid);
+    assert.throws(() => validateProposal(canonical, 'Asia/Shanghai', input), invalid, 'Raw invalid members cannot be discarded by normalization');
+  }
+  for (const detail of ['安静的小店', '有阳光的窗边、安静的小店', '', ['安静的小店', '有阳光的窗边']]) {
+    assert.throws(() => validateProposal({ ...canonical, preferences: { ...canonical.preferences, detail } }, 'Asia/Shanghai'), invalid);
+  }
+  assert.throws(() => validateEvent({ type: 'respond', version: 1, requestId: randomUUID(), proposal: canonical }, 'guest'), invalid, 'Only canonical snapshots may contain the display alias');
+  assert.doesNotThrow(() => validateProposal(proposal({ activity: '喝杯咖啡', preferences: { hints: [], details: { '喝杯咖啡': '安静的小店' }, detail: '安静的小店' } }), 'Asia/Shanghai'));
+  assert.throws(() => validateProposal({ date, time: '18:30', place: '', activity: '喝杯咖啡', preferences: { hints: [], detail: ['安静的小店'] } }, 'Asia/Shanghai'), invalid, 'Legacy proposals retain their scalar shape');
 });
 
 test('event input admits activity ranges and limits finalize to a host selection', async () => {

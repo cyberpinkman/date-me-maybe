@@ -221,13 +221,13 @@ test("range responses need a host selection for both open and legacy invitations
     assert.equal(M.complete(response.proposal), false);
     assert.equal(M.status(response), "host_review");
     assert.deepEqual(response.approvals, { host: null, guest: response.version });
-    assert.deepEqual(response.proposal.preferences.details, proposal.preferences.details);
+    assert.deepEqual(response.proposal.preferences.details, { "吃点好吃的": ["西餐"], "喝杯咖啡": ["安静的小店"] });
     for (const role of ["host", "guest"])
       failsWith(() => change(response, role, "confirm"), "ACTIVITY_SELECTION_REQUIRED");
     proposal.activities.push("散个步");
     proposal.preferences.details["吃点好吃的"] = "火锅";
     assert.equal(response.proposal.activities.length, 2);
-    assert.equal(response.proposal.preferences.details["吃点好吃的"], "西餐");
+    assert.deepEqual(response.proposal.preferences.details["吃点好吃的"], ["西餐"]);
   }
 });
 
@@ -251,7 +251,7 @@ test("range consent requires a complete schedule and correctly attached preferen
   const minimal = change(original, "guest", "respond", {
     date: "2099-10-10", time: "18:30", place: "美术馆门口", activities: ["散个步"],
   });
-  assert.deepEqual(minimal.proposal.preferences, { hints: [], details: { "散个步": "" }, detail: "" });
+  assert.deepEqual(minimal.proposal.preferences, { hints: [], details: { "散个步": [] }, detail: "" });
   assert.deepEqual(M.normalizeProposal(minimal.proposal), minimal.proposal);
 });
 
@@ -338,4 +338,92 @@ test("guest range edits reopen host selection while schedule edits preserve the 
   failsWith(() => change(response, "guest", "propose", { activity: "喝杯咖啡" }), "INVALID_ACTIVITY_SELECTION");
   failsWith(() => change(finalized, "guest", "propose", { activity: "喝杯咖啡" }), "INVALID_ACTIVITY_SELECTION");
   failsWith(() => change(finalized, "guest", "propose", { activity: "吃点好吃的", activities: ["吃点好吃的"] }), "INVALID_ACTIVITY_SELECTION");
+});
+
+test("activity details are independent normalized sets and finalizing preserves every choice", () => {
+  const proposal = rangeResponse();
+  proposal.preferences.details = {
+    "吃点好吃的": ["西餐", " 日料 ", "西餐", "火锅"],
+    "喝杯咖啡": ["安静的小店", "咖啡加甜品"],
+  };
+  const saved = JSON.parse(JSON.stringify(proposal));
+  const response = change(M.create({ mode: "open" }), "guest", "respond", proposal);
+  const details = {
+    "吃点好吃的": ["西餐", "日料", "火锅"].sort(),
+    "喝杯咖啡": ["安静的小店", "咖啡加甜品"].sort(),
+  };
+  assert.deepEqual(response.proposal.preferences.details, details);
+  assert.equal(response.proposal.preferences.detail, "");
+  assert.deepEqual(proposal, saved);
+  for (const activity of proposal.activities) {
+    const final = change(response, "host", "finalize", { activity });
+    assert.equal(M.status(final), "confirmed");
+    assert.deepEqual(final.proposal.preferences.details, details);
+    assert.equal(final.proposal.preferences.detail, details[activity].join("、"));
+    assert.deepEqual(M.normalizeProposal(final.proposal), final.proposal);
+    assert.deepEqual(final.history.at(-1).proposal.preferences.details, details);
+    assert.deepEqual(final.approvals, { host: final.version, guest: final.version });
+  }
+  proposal.preferences.details["吃点好吃的"].push("烤肉");
+  assert.deepEqual(response.proposal.preferences.details, details);
+  for (const invalid of [null, {}, 1, [1], [""], ["  "], Array(10).fill("西餐")])
+    failsWith(() => M.normalizeProposal({ ...saved, preferences: { details: { "吃点好吃的": invalid } } }), "INVALID_INPUT");
+  const nine = ["日料", "烤肉", "粤菜", "火锅", "烧烤", "西餐", "轻食", "甜品咖啡", "你来推荐"];
+  assert.deepEqual(M.normalizeProposal({ ...saved, preferences: { details: { "吃点好吃的": nine } } }).preferences.details["吃点好吃的"], nine.slice().sort());
+});
+
+test("old scalar range details normalize without changing their consent or legacy single-choice shape", () => {
+  const oldPending = openResponse();
+  oldPending.proposal.preferences.details = { "吃点好吃的": "西餐", "喝杯咖啡": "" };
+  const final = change(oldPending, "host", "finalize", { activity: "吃点好吃的" });
+  assert.deepEqual(final.proposal.preferences.details, { "吃点好吃的": ["西餐"], "喝杯咖啡": [] });
+  assert.equal(final.proposal.preferences.detail, "西餐");
+  const oldFinal = JSON.parse(JSON.stringify(final));
+  oldFinal.proposal.preferences.details = { "吃点好吃的": "西餐", "喝杯咖啡": "" };
+  assert.deepEqual(M.normalizeProposal(oldFinal.proposal), final.proposal);
+  for (const role of ["host", "guest"]) {
+    const next = change(oldFinal, role, "propose", {
+      time: "19:00", preferences: { details: { "吃点好吃的": ["西餐", "西餐"], "喝杯咖啡": [] } },
+    });
+    assert.equal(next.proposal.activity, "吃点好吃的");
+    assert.equal(next.proposal.preferences.detail, "西餐");
+    assert.deepEqual(next.proposal.preferences.details, final.proposal.preferences.details);
+    assert.equal(next.approvals[role === "host" ? "guest" : "host"], null);
+    assert.equal(M.status(change(next, role === "host" ? "guest" : "host", "confirm")), "confirmed");
+  }
+  const empty = M.normalizeProposal({ ...oldFinal.proposal, activity: "喝杯咖啡", preferences: { ...oldFinal.proposal.preferences, detail: "" } });
+  assert.deepEqual(empty.preferences.details["喝杯咖啡"], []);
+  assert.equal(empty.preferences.detail, "");
+  failsWith(() => M.normalizeProposal({ ...oldFinal.proposal, preferences: { ...oldFinal.proposal.preferences, detail: "日料" } }), "INVALID_INPUT");
+  const legacy = M.normalizeProposal({ ...sample.options[0], place: sample.place, activity: sample.activity, preferences: { detail: "安静的小店" } });
+  assert.deepEqual(legacy.preferences, { hints: [], detail: "安静的小店" });
+  assert.equal("activities" in legacy, false);
+  assert.equal("details" in legacy.preferences, false);
+});
+
+test("detail-set membership is guest consent: host edits fail and guest edits reopen finalization", () => {
+  const proposal = rangeResponse();
+  proposal.preferences.details["吃点好吃的"] = ["日料", "西餐"];
+  const response = change(M.create({ mode: "open" }), "guest", "respond", proposal);
+  const final = change(response, "host", "finalize", { activity: "吃点好吃的" });
+  for (const choices of [["日料"], ["日料", "西餐", "火锅"], []]) {
+    const patch = { preferences: { details: { "吃点好吃的": choices } } };
+    failsWith(() => change(final, "host", "propose", patch), "INVALID_ACTIVITY_SELECTION");
+    const next = change(final, "guest", "propose", patch);
+    assert.equal(next.proposal.activity, "");
+    assert.equal(next.proposal.preferences.detail, "");
+    assert.deepEqual(next.proposal.preferences.details["吃点好吃的"], choices.slice().sort());
+    assert.deepEqual(next.proposal.preferences.details["喝杯咖啡"], final.proposal.preferences.details["喝杯咖啡"]);
+    assert.deepEqual(next.approvals, { host: null, guest: next.version });
+    failsWith(() => change(next, "host", "confirm"), "ACTIVITY_SELECTION_REQUIRED");
+    const refinalized = change(next, "host", "finalize", { activity: "吃点好吃的" });
+    assert.equal(M.status(refinalized), "confirmed");
+    assert.equal(refinalized.proposal.preferences.detail, choices.slice().sort().join("、"));
+  }
+  for (const role of ["host", "guest"]) {
+    const equivalent = change(final, role, "propose", { preferences: { details: { "吃点好吃的": [" 西餐 ", "日料", "西餐"] } } });
+    assert.equal(equivalent.proposal.activity, "吃点好吃的");
+    assert.deepEqual(equivalent.proposal.preferences, final.proposal.preferences);
+  }
+  failsWith(() => M.normalizeProposal({ ...final.proposal, preferences: { ...final.proposal.preferences, detail: "日料" } }), "INVALID_INPUT");
 });

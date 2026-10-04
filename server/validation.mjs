@@ -29,9 +29,19 @@ function timezone(value = 'Asia/Shanghai') {
 function activityRange(value) {
   if (!Array.isArray(value) || value.length < 1 || value.length > activities.size || value.some(activity => !activities.has(activity))) fail('选一到六种你愿意一起做的事吧。');
 }
-function preferencesInput(value, allowed = ['hints', 'detail', 'details']) {
+function detailValues(activity, value) {
+  // Old ranged snapshots and clients used one string; only arrays require
+  // every supplied member to be nonempty, before any deduplication.
+  const values = typeof value === 'string' ? (value.trim() ? [value] : []) : value;
+  if (!Array.isArray(values) || values.length > 9 || values.some(item => typeof item !== 'string' || !item.trim() || !details[activity].includes(item.trim()))) fail('再选一下这次见面的小安排吧。');
+  return values.map(item => item.trim());
+}
+function preferencesInput(value, allowed = ['hints', 'detail', 'details'], activityNames = [...activities]) {
   fields(value, allowed);
-  if ('details' in value) fields(value.details, [...activities]);
+  if ('details' in value) {
+    fields(value.details, activityNames);
+    for (const [activity, selection] of Object.entries(value.details)) detailValues(activity, selection);
+  }
 }
 function slot(value, zone) {
   fields(value, ['date', 'time']);
@@ -78,7 +88,7 @@ export function validateEvent(input, role) {
   } else if (input.type !== 'confirm') {
     fields(input.proposal, ['date', 'time', 'place', 'activity', 'activities', 'preferences']);
     if ('activities' in input.proposal) activityRange(input.proposal.activities);
-    if ('preferences' in input.proposal) preferencesInput(input.proposal.preferences, 'activities' in input.proposal ? ['hints', 'details'] : undefined);
+    if ('preferences' in input.proposal) preferencesInput(input.proposal.preferences, 'activities' in input.proposal ? ['hints', 'details'] : undefined, input.proposal.activities);
   } else if (input.proposal !== undefined) fail('先保存想改的安排，再确认一下吧。');
   return input;
 }
@@ -91,19 +101,14 @@ export function validateProposal(proposal, zone, input = proposal) {
     if (proposal.activity !== '' && !proposal.activities.includes(proposal.activity)) throw new ApiError(422, 'INVALID_ACTIVITY_SELECTION', '从 TA 愿意的活动里选一种吧。');
   } else if (!activities.has(proposal.activity)) fail('选一种想一起做的事吧。');
   const prefs = proposal.preferences;
-  preferencesInput(prefs, hasRange ? ['hints', 'details', 'detail'] : ['hints', 'detail']);
-  if (input !== proposal && input.preferences !== undefined) preferencesInput(input.preferences, hasRange ? ['hints', 'details'] : ['hints', 'detail']);
+  preferencesInput(prefs, hasRange ? ['hints', 'details', 'detail'] : ['hints', 'detail'], proposal.activities);
+  // Inspect the original payload too: canonicalization must not erase invalid
+  // members, excess entries, or details outside the actual accepted range.
+  if (input !== proposal && input.preferences !== undefined) preferencesInput(input.preferences, hasRange ? ['hints', 'details'] : ['hints', 'detail'], proposal.activities);
   if (!Array.isArray(prefs?.hints) || prefs.hints.length > 8 || prefs.hints.some(hint => !hints.has(hint))) fail('再选一下想要的氛围吧。');
   if (hasRange) {
     fields(prefs.details, proposal.activities);
-    // Validate the incoming dictionary as well: normalization must not silently
-    // turn an out-of-range detail into an accepted request.
-    for (const dictionary of [prefs.details, input.preferences?.details].filter(value => value !== undefined)) {
-      fields(dictionary, proposal.activities);
-      for (const [activity, detail] of Object.entries(dictionary)) {
-        if (detail !== '' && !details[activity].includes(detail)) fail('再选一下这次见面的小安排吧。');
-      }
-    }
-    if ('detail' in prefs && prefs.detail !== (proposal.activity ? prefs.details[proposal.activity] || '' : '')) fail('再选一下这次见面的小安排吧。');
+    const alias = proposal.activity ? detailValues(proposal.activity, prefs.details[proposal.activity] ?? []).join('、') : '';
+    if ('detail' in prefs && prefs.detail !== alias) fail('再选一下这次见面的小安排吧。');
   } else if (prefs.detail !== '' && !details[proposal.activity].includes(prefs.detail)) fail('再选一下这次见面的小安排吧。');
 }
