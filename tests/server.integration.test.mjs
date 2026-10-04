@@ -400,6 +400,100 @@ test('PostgreSQL + HTTP: authentication, invitation ownership, guest capabilitie
     assert.deepEqual(await getOwner(a, invitationA.id), latestBeforeReplay, 'Replaying history must neither change nor roll back the latest stored invitation');
   });
 
+  await t.test('an existing fixed invitation accepts the new guest activity range without inheriting a final choice', async () => {
+    const legacy = succeeds(await c.post('/api/invitations', { draft: draftC, requestId: randomUUID() }), 'create legacy invitation').invitation;
+    const token = new URL(legacy.shareUrl).pathname.split('/').at(-1);
+    const response = succeeds(await d.post(`${guestPath(token)}/actions`, {
+      type: 'respond', version: legacy.version, requestId: randomUUID(),
+      proposal: { date: futureDate(8), time: '18:30', place: '河边入口', activity: '', activities: ['散个步'], preferences: { hints: [], details: { '散个步': '沿着河边走' } } },
+    }), 'new guest flow responds to legacy invitation').invitation;
+    assert.equal(response.mode, 'fixed');
+    assert.deepEqual(response.proposal.activities, ['散个步']);
+    assert.equal(response.proposal.activity, '', 'Even a one-item range requires the host to finalize');
+    assert.equal(response.approvals.host, null);
+    fails(await c.post(`${ownerPath(legacy.id)}/actions`, { type: 'confirm', version: response.version, requestId: randomUUID() }), 422, 'legacy invitation cannot bypass activity selection');
+  });
+
+  await t.test('open invitations enforce guest scope and atomically finalize one accepted activity', async () => {
+    const draft = { from: 'A', to: 'B', tone: 'playful', message: '具体怎么见面，想听听你的。', mode: 'open', timeZone: 'Asia/Shanghai' };
+    fails(await a.post('/api/invitations', { draft: { ...draft, activity: '喝杯咖啡' }, requestId: randomUUID() }), 422, 'open draft cannot preset an arrangement');
+    const created = succeeds(await a.post('/api/invitations', { draft, requestId: randomUUID() }), 'create open invitation').invitation;
+    assert.equal(created.mode, 'open');
+    assert.deepEqual(created.options, []);
+    assert.equal(created.proposal, null);
+    const token = new URL(created.shareUrl).pathname.split('/').at(-1);
+    const hostActions = `${ownerPath(created.id)}/actions`, guestActions = `${guestPath(token)}/actions`;
+    const proposal = {
+      date: futureDate(9), time: '18:30', place: '  咖啡店门口  ', activity: '',
+      activities: ['喝杯咖啡', '吃点好吃的', '喝杯咖啡'],
+      preferences: { hints: ['想多待一会儿'], details: { '喝杯咖啡': '安静的小店', '吃点好吃的': '西餐' } },
+    };
+    const respond = patch => ({ type: 'respond', version: created.version, requestId: randomUUID(), proposal: { ...proposal, ...patch } });
+    for (const patch of [
+      { place: '' }, { date: '2000-01-01' }, { activities: [] },
+      { activities: ['不在列表的活动'] }, { activity: '喝杯咖啡' },
+      { preferences: { hints: [], details: { '散个步': '公园慢慢走' } } },
+    ]) fails(await b.post(guestActions, respond(patch)), 422, 'invalid guest arrangement');
+    assert.deepEqual(await getOwner(a, created.id), created, 'Invalid arrangements do not advance state');
+
+    const guest = succeeds(await b.post(guestActions, respond({})), 'guest submits accepted activities').invitation;
+    assertPublicInvitation(guest, [userA.id, userA.email]);
+    assert.equal(guest.proposal.place, '咖啡店门口');
+    assert.deepEqual(new Set(guest.proposal.activities), new Set(['喝杯咖啡', '吃点好吃的']));
+    assert.equal(guest.proposal.activities.length, 2);
+    assert.equal(guest.proposal.activity, '');
+    assert.deepEqual(guest.proposal.preferences.details, proposal.preferences.details);
+    assert.deepEqual(guest.approvals, { host: null, guest: guest.version });
+    const selection = activity => ({ type: 'finalize', version: guest.version, requestId: randomUUID(), proposal: { activity } });
+    const shortcut = await a.post(hostActions, { type: 'confirm', version: guest.version, requestId: randomUUID() });
+    fails(shortcut, 422, 'ordinary confirm cannot finalize an unresolved range');
+    assert.equal(shortcut.body.error.code, 'ACTIVITY_SELECTION_REQUIRED');
+    fails(await b.post(guestActions, selection('喝杯咖啡')), 422, 'guest cannot finalize');
+    fails(await c.post(hostActions, selection('喝杯咖啡')), 404, 'another owner cannot finalize');
+    fails(await a.post(hostActions, selection('散个步')), 422, 'host cannot select outside the guest range');
+    fails(await a.post(hostActions, { ...selection('喝杯咖啡'), proposal: { activity: '喝杯咖啡', place: '换个地点' } }), 422, 'finalize cannot change other fields');
+    for (const patch of [
+      { place: '新地点' },
+      { activity: '喝杯咖啡', activities: ['喝杯咖啡', '散个步'] },
+      { activity: '喝杯咖啡', preferences: { details: { '喝杯咖啡': '咖啡加甜品', '吃点好吃的': '西餐' } } },
+    ]) fails(await a.post(hostActions, { type: 'propose', version: guest.version, requestId: randomUUID(), proposal: patch }), 422, 'host proposal must honor the guest range');
+    assert.equal((await getOwner(a, created.id)).version, guest.version);
+
+    const selections = ['喝杯咖啡', '吃点好吃的'].map(selection);
+    const results = await Promise.all(selections.map(event => a.post(hostActions, event)));
+    const winningIndex = results.findIndex(response => response.status === 200);
+    assert.ok(winningIndex >= 0);
+    assert.equal(results.filter(response => response.status === 200).length, 1);
+    assert.equal(results.filter(response => response.status === 409).length, 1);
+    const finalResponse = results[winningIndex];
+    const final = finalResponse.body.invitation;
+    assert.equal(final.version, guest.version + 1);
+    assert.equal(final.proposal.activity, selections[winningIndex].proposal.activity);
+    assert.deepEqual(final.proposal.preferences.details, guest.proposal.preferences.details);
+    assert.deepEqual(final.approvals, { host: final.version, guest: final.version });
+    fails(await b.post(guestActions, { type: 'confirm', version: guest.version, requestId: randomUUID() }), 409, 'old guest version cannot confirm a newer plan');
+    fails(await a.post(hostActions, { ...selections[winningIndex], proposal: { activity: selections[1 - winningIndex].proposal.activity } }), 409, 'finalization request id cannot select another activity');
+
+    const revised = succeeds(await b.post(guestActions, {
+      type: 'propose', version: final.version, requestId: randomUUID(),
+      proposal: { activities: ['散个步'], activity: '', preferences: { details: { '散个步': '公园慢慢走' } } },
+    }), 'guest may revise their own activity range').invitation;
+    assert.equal(revised.proposal.activity, '');
+    assert.equal(revised.approvals.host, null);
+    assert.deepEqual(await a.post(hostActions, selections[winningIndex]), finalResponse, 'Finalization retries retain their first response after later changes');
+    assert.deepEqual(await getOwner(a, created.id), { ...revised, shareUrl: created.shareUrl });
+
+    const changed = succeeds(await a.post(hostActions, {
+      type: 'propose', version: revised.version, requestId: randomUUID(),
+      proposal: { activity: '散个步', time: '20:15', place: '河边入口' },
+    }), 'host may choose an allowed activity while proposing a different arrangement').invitation;
+    assert.deepEqual(changed.proposal.activities, ['散个步']);
+    assert.equal(changed.approvals.host, changed.version);
+    assert.equal(changed.approvals.guest, null, 'A changed time or place needs guest approval');
+    const agreed = succeeds(await b.post(guestActions, { type: 'confirm', version: changed.version, requestId: randomUUID() }), 'guest accepts the revised selected plan').invitation;
+    assert.deepEqual(agreed.approvals, { host: agreed.version, guest: agreed.version });
+  });
+
   await t.test('sign-out invalidates both the browser cookie and the server session while C remains signed in', async () => {
     const oldCookie = a.cookie();
     succeeds(await a.post('/api/auth/sign-out', {}), 'A signs out');

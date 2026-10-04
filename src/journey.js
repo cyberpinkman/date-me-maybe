@@ -94,13 +94,13 @@ function startGuestJourney(x) {
       id: x.id,
       version: x.version,
       scene: "invite",
-      time: x.mode === "fixed" ? { ...x.options[0] } : null,
-      customTime: false,
-      activity: "",
+      time: x.mode === "fixed" && x.options?.[0] ? { ...x.options[0] } : null,
+      customTime: !x.options?.length,
+      activities: [],
+      detailIndex: 0,
       details: {},
       hints: [],
       place: x.place || "",
-      placeOpen: false,
       teaseCount: 0,
       teasePosition: null,
     };
@@ -112,13 +112,17 @@ function guestProposal() {
     date: g.time?.date || "",
     time: g.time?.time || "",
     place: g.place.trim(),
-    activity: g.activity,
-    preferences: { hints: [...g.hints], detail: g.details[g.activity] || "" },
+    activities: [...g.activities],
+    activity: "",
+    preferences: {
+      hints: [...g.hints],
+      details: Object.fromEntries(g.activities.map((activity) => [activity, g.details[activity] || ""])),
+    },
   };
 }
 function preferenceRows(p) {
   const pref = p?.preferences || {};
-  return `${pref.detail ? `<div class="ticket-detail"><small>${p.activity === "吃点好吃的" ? "MENU" : "PREFERENCE"}</small><b>${esc(pref.detail)}</b></div>` : ""}${pref.hints?.length ? `<div class="ticket-detail"><small>小暗示</small><div class="hint-tags">${pref.hints.map((h) => `<span>${esc(h)}</span>`).join("")}</div></div>` : ""}`;
+  return pref.hints?.length ? `<div class="ticket-detail"><small>小暗示</small><div class="hint-tags">${pref.hints.map((h) => `<span>${esc(h)}</span>`).join("")}</div></div>` : "";
 }
 function sceneTimeFoot() {
   const t = guestJourney.time;
@@ -159,18 +163,20 @@ function sceneContent(x, g) {
   if (g.scene === "surprise")
     return `<div class="card-top"><span>A LITTLE TOO HAPPY</span><span class="mini-heart">♡</span></div><div class="surprise-mascot">${mascot()}<span class="surprise-heart one">♡</span><span class="surprise-heart two">♡</span></div><div class="stamp-note">今天的开心，有点超标</div><h2>等一下，<br>你真的愿意吗？</h2><p class="personal-message">让我先偷偷开心三秒。<br>然后，我们认真安排一下见面。</p><div class="scene-bottom">${sceneButton("好啦，选个时间", "journey-next")}</div>`;
   if (g.scene === "time")
-    return `<div class="card-top"><span>MAKE A LITTLE TIME</span><span class="mini-heart">♡</span></div><div class="scene-symbol">${icon("calendar", 32)}</div><h2>所以，什么时候<br>能见到你？</h2><p class="personal-message">${x.mode === "fixed" ? "这是对方提议的时间，也想听听你的想法。" : "这里有两个小提议，选个你方便的。"}</p><div class="scene-time-options">${x.options.map((t, i) => `<button class="scene-time-option ${!g.customTime && g.time?.date === t.date && g.time?.time === t.time ? "selected" : ""}" data-action="journey-time" data-index="${i}" aria-pressed="${!g.customTime && g.time?.date === t.date && g.time?.time === t.time}"><span><strong>${fmt(t.date, false)}</strong><small>${fmt(t.date).split(" · ")[1]}</small></span><b>${esc(t.time)}</b><span class="radio"></span></button>`).join("")}</div><button class="text-btn time-custom-toggle" data-action="journey-custom">${g.customTime ? "正在选择一个新时间" : "我想选另一个时间"}</button>${g.customTime ? `<div class="columns scene-custom-time"><div><label for="journey-date" class="label">见面日期</label><input id="journey-date" data-journey-field="date" type="date" min="${dateString(new Date())}" value="${esc(g.time?.date || "")}"></div><div><label for="journey-time" class="label">见面时间</label><input id="journey-time" data-journey-field="time" type="time" value="${esc(g.time?.time || "")}"></div></div>` : ""}<div class="error" id="journey-error" role="alert"></div><div class="scene-bottom">${sceneButton("就这个时间吧", "journey-next", !g.time?.date || !g.time?.time)}</div>`;
+    return `<div class="card-top"><span>MAKE A LITTLE TIME</span><span class="mini-heart">♡</span></div><div class="scene-symbol">${icon("calendar", 32)}</div><h2>所以，什么时候<br>能见到你？</h2><p class="personal-message">${!x.options?.length ? "挑个你方便的时间，想好好见你。" : x.mode === "fixed" ? "这是对方提议的时间，也想听听你的想法。" : "这里有两个小提议，选个你方便的。"}</p><div class="scene-time-options">${(x.options || []).map((t, i) => `<button class="scene-time-option ${!g.customTime && g.time?.date === t.date && g.time?.time === t.time ? "selected" : ""}" data-action="journey-time" data-index="${i}" aria-pressed="${!g.customTime && g.time?.date === t.date && g.time?.time === t.time}"><span><strong>${fmt(t.date, false)}</strong><small>${fmt(t.date).split(" · ")[1]}</small></span><b>${esc(t.time)}</b><span class="radio"></span></button>`).join("")}</div>${x.options?.length ? `<button class="text-btn time-custom-toggle" data-action="journey-custom">${g.customTime ? "正在选择一个新时间" : "我想选另一个时间"}</button>` : ""}${g.customTime ? `<div class="columns scene-custom-time"><div><label for="journey-date" class="label">见面日期</label><input id="journey-date" data-journey-field="date" type="date" min="${dateString(new Date())}" value="${esc(g.time?.date || "")}"></div><div><label for="journey-time" class="label">见面时间</label><input id="journey-time" data-journey-field="time" type="time" value="${esc(g.time?.time || "")}"></div></div>` : ""}<div class="error" id="journey-error" role="alert"></div><div class="scene-bottom">${sceneButton("就这个时间吧", "journey-next", !g.time?.date || !g.time?.time)}</div>`;
   if (g.scene === "hints")
     return `<div class="card-top"><span>A FEW LITTLE HINTS</span><span class="mini-heart">♡</span></div><div class="scene-symbol">${icon("heart", 32)}</div><h2>还有什么，<br>想偷偷暗示我？</h2><p class="personal-message">可以多选，也可以先保密。</p><div class="scene-hints">${sceneHints.map((h, i) => `<button class="hint-choice ${g.hints.includes(h) ? "selected" : ""}" data-action="journey-hint" data-index="${i}" aria-pressed="${g.hints.includes(h)}"><span>${h}</span><span class="hint-check">${g.hints.includes(h) ? "✓" : "+"}</span></button>`).join("")}</div><div class="scene-bottom">${sceneTimeFoot()}${sceneButton(g.hints.length ? "暗示给你了" : "先保密，下一步", "journey-next")}</div>`;
   if (g.scene === "activity")
-    return `<div class="card-top"><span>A LITTLE PLAN FOR US</span><span class="mini-heart">♡</span></div><div class="scene-symbol">${icon("heart", 32)}</div><h2>那天，<br>想怎么见面？</h2><p class="personal-message">对方提议「${esc(x.activity)}」，也想听听你的。</p><div class="scene-activities">${activities.map((a) => `<button class="scene-activity ${g.activity === a[0] ? "selected" : ""}" data-action="journey-activity" data-activity="${esc(a[0])}" aria-pressed="${g.activity === a[0]}">${icon(a[1], 25)}<span>${a[0]}</span><i class="radio"></i></button>`).join("")}</div><div class="scene-bottom">${sceneButton(g.activity === "吃点好吃的" ? "再选点好吃的" : "再具体一点", "journey-next", !g.activity)}</div>`;
+    return `<div class="card-top"><span>A LITTLE PLAN FOR US</span><span class="mini-heart">♡</span></div><div class="scene-symbol">${icon("heart", 32)}</div><h2>那天，<br>想怎么见面？</h2><p class="personal-message">愿意一起做的，都可以选。<br>这次做哪一个，交给 ${esc(x.from)} 来敲定。</p><div class="scene-activities">${activities.map((a) => `<button class="scene-activity ${g.activities.includes(a[0]) ? "selected" : ""}" data-action="journey-activity" data-activity="${esc(a[0])}" aria-pressed="${g.activities.includes(a[0])}">${icon(a[1], 25)}<span>${a[0]}</span><i class="multi-check" aria-hidden="true">${g.activities.includes(a[0]) ? "✓" : ""}</i></button>`).join("")}</div><div class="scene-bottom">${sceneButton(g.activities.length ? "这些都愿意，再具体一点" : "选点愿意一起做的事", "journey-next", !g.activities.length)}</div>`;
   if (g.scene === "detail") {
-    const config = sceneDetails[g.activity];
-    return `<div class="card-top"><span>THE LITTLE DETAILS</span><span class="mini-heart">♡</span></div><div class="scene-symbol">${icon(activities.find((a) => a[0] === g.activity)?.[1] || "heart", 32)}</div><h2>${config.title}</h2><p class="personal-message">${config.note}</p><div class="scene-details ${config.items.length === 9 ? "nine" : "four"}">${config.items.map((item, i) => `<button class="detail-choice ${g.details[g.activity] === item[1] ? "selected" : ""}" data-action="journey-detail" data-index="${i}" aria-pressed="${g.details[g.activity] === item[1]}"><span class="detail-emoji" aria-hidden="true">${item[0]}</span><span>${item[1]}</span><i class="radio"></i></button>`).join("")}</div><div class="scene-bottom">${sceneButton(config.cta, "journey-next", !g.details[g.activity])}</div>`;
+    const activity = g.activities[g.detailIndex], config = sceneDetails[activity];
+    const last = g.detailIndex === g.activities.length - 1;
+    return `<div class="card-top"><span>THE LITTLE DETAILS</span><span class="mini-heart">♡</span></div><div class="scene-symbol">${icon(activities.find((a) => a[0] === activity)?.[1] || "heart", 32)}</div><h2>${config.title}</h2><p class="personal-message">${config.note}<br>还没想好，也可以交给对方。</p>${g.activities.length > 1 ? `<div class="detail-tabs" aria-label="每个小安排的偏好">${g.activities.map((item, index) => `<button class="detail-tab ${index === g.detailIndex ? "selected" : ""}" data-action="journey-detail-tab" data-index="${index}" aria-pressed="${index === g.detailIndex}">${esc(item)}${g.details[item] ? " ✓" : ""}</button>`).join("")}</div>` : ""}<div class="scene-details ${config.items.length === 9 ? "nine" : "four"}">${config.items.map((item, i) => `<button class="detail-choice ${g.details[activity] === item[1] ? "selected" : ""}" data-action="journey-detail" data-index="${i}" aria-pressed="${g.details[activity] === item[1]}"><span class="detail-emoji" aria-hidden="true">${item[0]}</span><span>${item[1]}</span><i class="radio"></i></button>`).join("")}</div><div class="scene-bottom">${sceneButton(last ? (g.details[activity] ? "把小心思放在一起" : "这个听你的，看看小安排") : (g.details[activity] ? "收好，再看下一个" : "这个听你的，再看下一个"), "journey-next")}</div>`;
   }
   const proposal = guestProposal();
-  return `<div class="card-top"><span>OUR LITTLE PROMISE</span><span class="mini-heart">♡</span></div><div class="mini-mascot">${mascot()}</div><h2>小约定，<br>先这样说好？</h2><p class="personal-message">把刚才的心意，都放在这里了。</p><div class="journey-ticket">${ticket({ ...x, proposal })}</div>${!x.place ? `<button class="text-btn" data-action="journey-place-toggle">${g.placeOpen ? "地点也可以稍后一起选" : "我有个见面地点想提议"}</button>${g.placeOpen ? `<label class="label" for="journey-place">在哪里碰面</label><input id="journey-place" data-journey-field="place" maxlength="60" value="${esc(g.place)}" placeholder="店名、地址或好找的集合点">` : ""}` : ""}<p class="scene-submit-note">这些选择会交给 ${esc(x.from)} 确认。${proposal.place ? "" : "地点还没定，我们再一起选。"}</p><div class="scene-bottom">${sceneButton("把小约定交给你", "journey-submit")}</div>`;
+  return `<div class="card-top"><span>OUR LITTLE PROMISE</span><span class="mini-heart">♡</span></div><div class="mini-mascot">${mascot()}</div><h2>我的小心思，<br>都告诉你啦。</h2><p class="personal-message">时间和愿意一起做的事，都放在这里了。</p><div class="journey-place-field"><label class="label" for="journey-place">想在哪里碰面？</label><input id="journey-place" data-journey-field="place" maxlength="60" value="${esc(g.place)}" placeholder="店名、地址或好找的集合点"><p class="hint">留个好找的地方，让这次见面更近一点。</p></div><div class="journey-ticket">${ticket({ ...x, proposal })}</div><p class="scene-submit-note">这些都是我愿意的，这次一起做什么，等 ${esc(x.from)} 来敲定。</p><div class="error" id="journey-error" role="alert"></div><div class="scene-bottom">${sceneButton("把小心思交给你", "journey-submit", !proposal.place)}</div>`;
 }
+
 function bindJourneyInputs() {
   document.querySelectorAll("[data-journey-field]").forEach((el) =>
     el.addEventListener("input", () => {
@@ -178,10 +184,9 @@ function bindJourneyInputs() {
         guestJourney.place = el.value;
         const placeValue = $(".journey-ticket [data-plan-place]");
         if (placeValue)
-          placeValue.textContent = el.value.trim() || "还需要一起确认地点";
-        const note = $(".scene-submit-note");
-        if (note)
-          note.textContent = `这些选择会交给 ${current().from} 确认。${el.value.trim() ? "" : "地点还没定，我们再一起选。"}`;
+          placeValue.textContent = el.value.trim() || "还需要填写见面地点";
+        const submit = document.querySelector('[data-action="journey-submit"]');
+        if (submit) submit.disabled = !el.value.trim();
       } else {
         guestJourney.time ??= { date: "", time: "" };
         guestJourney.time[el.dataset.journeyField] = el.value;
@@ -211,7 +216,11 @@ async function journeyAction(a, el) {
     g.scene = "surprise";
     celebrate();
   } else if (a === "journey-back") {
-    g.scene = order[Math.max(0, order.indexOf(g.scene) - 1)];
+    if (g.scene === "detail" && g.detailIndex > 0) g.detailIndex--;
+    else {
+      if (g.scene === "review") g.detailIndex = g.activities.length - 1;
+      g.scene = order[Math.max(0, order.indexOf(g.scene) - 1)];
+    }
   } else if (a === "journey-next") {
     if (
       g.scene === "time" &&
@@ -222,9 +231,12 @@ async function journeyAction(a, el) {
       $("#journey-error").textContent = "选一个还没到来的时间吧。";
       return;
     }
-    if (g.scene === "activity" && !g.activity) return;
-    if (g.scene === "detail" && !g.details[g.activity]) return;
-    g.scene = order[Math.min(order.length - 1, order.indexOf(g.scene) + 1)];
+    if (g.scene === "activity") {
+      if (!g.activities.length) return;
+      g.detailIndex = 0;
+    }
+    if (g.scene === "detail" && g.detailIndex < g.activities.length - 1) g.detailIndex++;
+    else g.scene = order[Math.min(order.length - 1, order.indexOf(g.scene) + 1)];
   } else if (a === "journey-time") {
     g.time = { ...x.options[Number(el.dataset.index)] };
     g.customTime = false;
@@ -237,19 +249,34 @@ async function journeyAction(a, el) {
       ? g.hints.filter((v) => v !== h)
       : [...g.hints, h];
   } else if (a === "journey-activity") {
-    g.activity = el.dataset.activity;
+    const activity = el.dataset.activity;
+    if (!sceneDetails[activity]) return;
+    g.activities = g.activities.includes(activity)
+      ? g.activities.filter((item) => item !== activity)
+      : [...g.activities, activity];
   } else if (a === "journey-detail") {
-    g.details[g.activity] =
-      sceneDetails[g.activity].items[Number(el.dataset.index)][1];
-  } else if (a === "journey-place-toggle") {
-    g.placeOpen = !g.placeOpen;
+    const activity = g.activities[g.detailIndex];
+    const detail = sceneDetails[activity].items[Number(el.dataset.index)][1];
+    g.details[activity] = g.details[activity] === detail ? "" : detail;
+  } else if (a === "journey-detail-tab") {
+    const index = Number(el.dataset.index);
+    if (Number.isInteger(index) && index >= 0 && index < g.activities.length) g.detailIndex = index;
   } else if (a === "journey-submit") {
     if (g.scene !== "review") return;
+    const proposal = guestProposal();
+    if (!proposal.date || !proposal.time || new Date(`${proposal.date}T${proposal.time}`) <= new Date()) {
+      $("#journey-error").textContent = "时间也要一起选好，回去挑个还没到来的时间吧。";
+      return;
+    }
+    if (!proposal.activities.length || !proposal.place) {
+      $("#journey-error").textContent = !proposal.place ? "还差一个见面地点，写下在哪里碰面吧。" : "选一点愿意一起做的事，再把心意交给对方吧。";
+      return;
+    }
     el.disabled = true;
-    const next = await updateRecord({
+    await updateRecord({
       type: "respond",
       version: g.version,
-      proposal: guestProposal(),
+      proposal,
     });
     guestJourney = null;
     view = "result";
@@ -263,7 +290,7 @@ async function journeyAction(a, el) {
       "journey-detail",
       "journey-time",
       "journey-custom",
-      "journey-place-toggle",
+      "journey-detail-tab",
     ].includes(a)
   )
     window.scrollTo({ top: 0, behavior: "instant" });

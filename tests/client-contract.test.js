@@ -66,11 +66,12 @@ async function senderFixture() {
   vm.runInContext(`
     draft.from = "未发送的心意";
     draft.message = "这份草稿要保留";
-    step = 2;
+    step = 1;
     saveCreationDraft();
     currentId = "${invitation.id}";
     view = "host";
     modal = {type:"proposal", version:1};
+    hostActivitySelection = {id:currentId, version:1, activity:"吃点好吃的"};
     loginEmail = "a@example.test";
     loginOtp = "123456";
     otpSent = true;
@@ -84,15 +85,15 @@ test("logout and expired-session recovery clear identity-scoped state without lo
     await t.test(action, async () => {
       const { context, storage } = await senderFixture();
       await vm.runInContext(`action(${JSON.stringify(action)}, {tagName:"BUTTON"})`, context);
-      const state = JSON.parse(vm.runInContext(`JSON.stringify({sessionUser,invitations,currentId,modal,guestJourney,loginEmail,loginOtp,otpSent,mailboxEmails,view,draft,step})`, context));
-      for (const field of ["sessionUser", "currentId", "modal", "guestJourney", "mailboxEmails"]) assert.equal(state[field], null, field);
+      const state = JSON.parse(vm.runInContext(`JSON.stringify({sessionUser,invitations,currentId,modal,hostActivitySelection,guestJourney,loginEmail,loginOtp,otpSent,mailboxEmails,view,draft,step})`, context));
+      for (const field of ["sessionUser", "currentId", "modal", "hostActivitySelection", "guestJourney", "mailboxEmails"]) assert.equal(state[field], null, field);
       assert.deepEqual(state.invitations, []);
       assert.equal(state.loginEmail, "");
       assert.equal(state.loginOtp, "");
       assert.equal(state.otpSent, false);
       assert.equal(state.view, action === "logout" ? "create" : "account");
       assert.equal(state.draft.message, "这份草稿要保留");
-      assert.equal(state.step, 2);
+      assert.equal(state.step, 1);
       assert.equal(JSON.parse(storage.get("opendater-creation-draft-v1")).draft.message, "这份草稿要保留");
     });
   }

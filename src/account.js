@@ -16,9 +16,13 @@ function saveCreationDraft(intent = "create") {
 function restoreCreationDraft() {
   try {
     const saved = JSON.parse(sessionStorage.getItem(draftStorageKey) || "null");
-    if (saved?.draft && Array.isArray(saved.draft.options)) {
-      draft = { ...defaultDraft(), ...saved.draft };
-      step = Math.max(0, Math.min(2, Number(saved.step) || 0));
+    if (saved?.draft && typeof saved.draft === "object") {
+      const restored = defaultDraft();
+      for (const key of ["from", "to", "tone", "message"]) {
+        if (typeof saved.draft[key] === "string") restored[key] = saved.draft[key];
+      }
+      draft = restored;
+      step = Math.max(0, Math.min(1, Number(saved.step) || 0));
       accountIntent = saved.intent === "list" ? "list" : "create";
       return true;
     }
@@ -34,6 +38,7 @@ function resetSenderIdentity() {
   modal = null;
   priorFocus = null;
   guestJourney = null;
+  hostActivitySelection = null;
   role = "host";
   loginEmail = "";
   loginOtp = "";

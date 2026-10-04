@@ -4,6 +4,22 @@ import { ApiError, notFound } from './errors.mjs';
 import { digest, fingerprint, createGuestToken, encryptToken, decryptToken, isGuestToken } from './crypto.mjs';
 import { fields, isUuid, requestId, validateDraft, validateEvent, validateProposal } from './validation.mjs';
 
+const modelErrorStatus = Object.freeze({
+  INVALID_INPUT: 422, INVALID_ROLE: 422, STALE_VERSION: 409,
+  INVITATION_CLOSED: 410, MISSING_PROPOSAL: 422, ALREADY_RESPONDED: 409,
+  ACTIVITY_SELECTION_REQUIRED: 422, INVALID_ACTIVITY_SELECTION: 422,
+  FINALIZATION_NOT_ALLOWED: 409,
+});
+function modelResult(run) {
+  try { return run(); }
+  catch (error) {
+    if (error instanceof Model.RuleError && Object.hasOwn(modelErrorStatus, error.code)) {
+      throw new ApiError(modelErrorStatus[error.code], error.code, error.message);
+    }
+    throw error;
+  }
+}
+
 export function createInvitationService({ pool, config }) {
   const serialize = (row, owner = false, state = row.state) => {
     const result = { ...state, createdAt: new Date(row.created_at).toISOString(), updatedAt: new Date(row.updated_at).toISOString() };
@@ -45,7 +61,7 @@ export function createInvitationService({ pool, config }) {
         const stored = await client.query('SELECT * FROM invitations WHERE id=$1 AND owner_id=$2', [previous.rows[0].invitation_id, ownerId]);
         return serialize(stored.rows[0], true);
       }
-      const id = randomUUID(), token = createGuestToken(), state = Model.create({ ...draft, id });
+      const id = randomUUID(), token = createGuestToken(), state = modelResult(() => Model.create({ ...draft, id }));
       const inserted = await client.query('INSERT INTO invitations(id,owner_id,guest_token_hash,guest_token_encrypted,state,version) VALUES($1,$2,$3,$4,$5,1) RETURNING *', [id, ownerId, digest(token), encryptToken(token, config.shareSecret), state]);
       await client.query('INSERT INTO invitation_creations(owner_id,request_id,request_hash,invitation_id) VALUES($1,$2,$3,$4)', [ownerId, key, hash, id]);
       return serialize(inserted.rows[0], true);
@@ -71,13 +87,12 @@ export function createInvitationService({ pool, config }) {
       if (row.state.closed) throw new ApiError(410, 'INVITATION_CLOSED', '这份邀请已经结束。');
       if (event.type === 'respond' && row.state.responded) throw new ApiError(409, 'ALREADY_RESPONDED', '这份邀请已经回应，请查看最新安排。');
       if (event.type === 'confirm' && !row.state.proposal) throw new ApiError(422, 'MISSING_PROPOSAL', '请先选一个时间。');
+      const next = modelResult(() => Model.transition(row.state, { ...event, role }));
       if (event.type !== 'confirm') {
-        let nextProposal;
-        try { nextProposal = Model.normalizeProposal(event.proposal, row.state.proposal || { activity: row.state.activity, place: row.state.place }); }
-        catch { throw new ApiError(422, 'INVALID_INPUT', '见面安排还没填完整，检查一下再试吧。'); }
-        validateProposal(nextProposal, row.state.timeZone || 'Asia/Shanghai');
+        // Validate the exact canonical proposal that will be persisted, after the
+        // pure model enforces role/range rules and before either database write.
+        validateProposal(next.proposal, row.state.timeZone || 'Asia/Shanghai', event.proposal);
       }
-      const next = Model.transition(row.state, { ...event, role });
       const updated = await client.query('UPDATE invitations SET state=$1,version=$2,updated_at=now() WHERE id=$3 RETURNING *', [next, next.version, row.id]);
       await client.query('INSERT INTO invitation_requests(invitation_id,actor,request_id,request_hash,response) VALUES($1,$2,$3,$4,$5)', [row.id, role, event.requestId, hash, next]);
       return serialize(updated.rows[0], role === 'host');

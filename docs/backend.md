@@ -116,6 +116,12 @@ Google 返回 Better Auth 回调后，应用继续返回 `/?login=complete`；�
 
 正式约定要求双方同意同一版本，且时间、地点完整。改期会使旧确认失效。小暗示不会重写正式时间；修改日期、时间或地点会保留活动偏好；切换活动时清除不属于新活动的旧细节。
 
+开发分支增加 `mode: "open"`：发起人不预设安排，受邀人提交未来的日期、时间、非空地点，以及 `proposal.activities` 表示的可接受活动范围。每项偏好保存在 `preferences.details[activity]`；`proposal.activity` 在发起人选定前为空。范围不是已确认的行程，即使只选一项，也要等待发起人敲定。
+
+发起人通过 `finalize` 提交 `{ activity }`，只能选范围中的一项，不能同时修改其他安排。受邀人已同意该范围和时间地点，因此这一步形成双方同意的新版本。普通 `confirm` 不能绕过活动选择；若发起人同时变更时间或地点，则使用 `propose`，并等待受邀人确认。活动范围和对应偏好不能由发起人改写。
+
+邀请状态仍保存在现有 JSONB 字段，不需要 SQL 迁移。旧 `fixed` / `flexible` 记录和未包含 `activities` 的回应保留原有确认行为；旧链接也能通过新版页面提交活动范围。业务规则错误由共享模型的 `RuleError` 映射成明确的 4xx，未识别的程序错误仍保留服务端诊断。
+
 创建记录与已提交回应保存在 PostgreSQL。`sessionStorage` 仅暂存登录前后的创建草稿；接收者尚未提交的分步选择在页面内存中，刷新页面会丢失。
 
 ## HTTP 接口
@@ -132,7 +138,7 @@ Google 返回 Better Auth 回调后，应用继续返回 `/?login=complete`；�
 | `GET /api/invitations` | 已登录 owner 的邀请列表 |
 | `POST /api/invitations` | 已登录 owner 创建邀请，提交 `draft` 与 `requestId` |
 | `GET /api/invitations/:id` | owner 获取一份邀请及分享链接 |
-| `POST /api/invitations/:id/actions` | owner 提议或确认，提交 `type`、`version`、`requestId` 与可选 `proposal` |
+| `POST /api/invitations/:id/actions` | owner `propose`、`confirm` 或 `finalize`，提交 `type`、`version`、`requestId` 与可选 `proposal` |
 | `GET /api/guest/:token` | 匿名读取对应邀请 |
 | `POST /api/guest/:token/actions` | 匿名 `respond`、`propose` 或 `confirm` |
 | `GET /api/dev/mailbox` | 仅本地验收模式提供测试邮件箱 |

@@ -191,3 +191,151 @@ test("legacy proposals normalize optional preferences and confirm unchanged resp
   );
   assert.equal(M.status(selected), "host_review");
 });
+
+const rangeResponse = () => ({
+  date: "2099-10-10", time: "18:30", place: "  美术馆门口  ",
+  activities: ["吃点好吃的", "喝杯咖啡"], activity: "",
+  preferences: {
+    hints: ["轻松随意就好"],
+    details: { "吃点好吃的": "西餐", "喝杯咖啡": "安静的小店" },
+  },
+});
+const openResponse = () => change(M.create({ from: "A", to: "B", mode: "open" }), "guest", "respond", rangeResponse());
+const failsWith = (callback, code) => assert.throws(callback, (error) => error instanceof M.RuleError && error.code === code);
+
+test("range responses need a host selection for both open and legacy invitations", () => {
+  const open = M.create({ ...sample, mode: "open" });
+  assert.deepEqual(open.options, []);
+  assert.equal(open.place, "");
+  assert.equal(open.activity, "");
+  assert.equal(open.proposal, null);
+  assert.deepEqual(open.approvals, { host: null, guest: null });
+  assert.equal(M.status(open), "waiting");
+  for (const mode of ["open", "fixed", "flexible"]) {
+    const original = M.create({ ...sample, mode });
+    const proposal = rangeResponse();
+    const response = change(original, "guest", "respond", proposal);
+    assert.equal(response.version, original.version + 1, mode);
+    assert.equal(response.proposal.place, "美术馆门口");
+    assert.equal(response.proposal.activity, "");
+    assert.equal(M.complete(response.proposal), false);
+    assert.equal(M.status(response), "host_review");
+    assert.deepEqual(response.approvals, { host: null, guest: response.version });
+    assert.deepEqual(response.proposal.preferences.details, proposal.preferences.details);
+    for (const role of ["host", "guest"])
+      failsWith(() => change(response, role, "confirm"), "ACTIVITY_SELECTION_REQUIRED");
+    proposal.activities.push("散个步");
+    proposal.preferences.details["吃点好吃的"] = "火锅";
+    assert.equal(response.proposal.activities.length, 2);
+    assert.equal(response.proposal.preferences.details["吃点好吃的"], "西餐");
+  }
+});
+
+test("range consent requires a complete schedule and correctly attached preferences", () => {
+  const original = M.create({ mode: "open" });
+  const invalid = [
+    [{ activities: [] }, "INVALID_INPUT"],
+    [{ activities: "吃点好吃的" }, "INVALID_INPUT"],
+    [{ date: "" }, "INVALID_INPUT"],
+    [{ time: "" }, "INVALID_INPUT"],
+    [{ place: "  " }, "INVALID_INPUT"],
+    [{ activity: "吃点好吃的" }, "INVALID_ACTIVITY_SELECTION"],
+    [{ preferences: { details: { "散个步": "公园慢慢走" } } }, "INVALID_INPUT"],
+    [{ preferences: { details: { "吃点好吃的": 1 } } }, "INVALID_INPUT"],
+  ];
+  for (const [patch, code] of invalid)
+    failsWith(() => change(original, "guest", "respond", { ...rangeResponse(), ...patch }), code);
+  const proposal = rangeResponse();
+  delete proposal.activities;
+  failsWith(() => change(original, "guest", "respond", proposal), "INVALID_INPUT");
+  const minimal = change(original, "guest", "respond", {
+    date: "2099-10-10", time: "18:30", place: "美术馆门口", activities: ["散个步"],
+  });
+  assert.deepEqual(minimal.proposal.preferences, { hints: [], details: { "散个步": "" }, detail: "" });
+  assert.deepEqual(M.normalizeProposal(minimal.proposal), minimal.proposal);
+});
+
+test("only a host subset selection at an unchanged schedule may inherit guest consent", () => {
+  const response = openResponse();
+  const original = JSON.parse(JSON.stringify(response));
+  const finalized = change(response, "host", "finalize", { activity: "吃点好吃的" });
+  assert.equal(finalized.version, response.version + 1);
+  assert.equal(M.status(finalized), "confirmed");
+  assert.equal(M.complete(finalized.proposal), true);
+  assert.equal(finalized.proposal.activity, "吃点好吃的");
+  assert.equal(finalized.proposal.preferences.detail, "西餐");
+  assert.deepEqual(finalized.proposal.activities, response.proposal.activities);
+  assert.deepEqual(finalized.proposal.preferences.details, response.proposal.preferences.details);
+  for (const field of ["date", "time", "place"])
+    assert.equal(finalized.proposal[field], response.proposal[field]);
+  assert.deepEqual(finalized.approvals, { host: finalized.version, guest: finalized.version });
+  assert.deepEqual(finalized.history.at(-1), {
+    version: response.version, proposal: response.proposal, approvals: response.approvals,
+  });
+  assert.deepEqual(response, original);
+  failsWith(() => change(response, "guest", "finalize", { activity: "吃点好吃的" }), "INVALID_ROLE");
+  failsWith(() => change(response, "host", "finalize", { activity: "散个步" }), "INVALID_ACTIVITY_SELECTION");
+  failsWith(() => change(finalized, "host", "finalize", { activity: "喝杯咖啡" }), "FINALIZATION_NOT_ALLOWED");
+  for (const patch of [{ date: "2099-10-11" }, { time: "19:00" }, { place: "别处" }, { activities: ["吃点好吃的"] }, { preferences: {} }])
+    failsWith(() => change(response, "host", "finalize", { activity: "吃点好吃的", ...patch }), "INVALID_INPUT");
+  failsWith(() => change({ ...response, approvals: { host: null, guest: null } }, "host", "finalize", { activity: "吃点好吃的" }), "FINALIZATION_NOT_ALLOWED");
+  failsWith(() => M.transition(finalized, { role: "host", type: "finalize", version: response.version, proposal: { activity: "吃点好吃的" } }), "STALE_VERSION");
+  assert.deepEqual(change(finalized, "guest", "confirm"), finalized);
+});
+
+test("host amendments preserve guest scope and always require a fresh guest confirmation", () => {
+  const response = openResponse();
+  failsWith(() => change(response, "host", "propose", { time: "19:00" }), "ACTIVITY_SELECTION_REQUIRED");
+  const finalized = change(response, "host", "finalize", { activity: "吃点好吃的" });
+  for (const before of [response, finalized]) {
+    for (const patch of [{ date: "2099-10-11" }, { time: "19:00" }, { place: "公园门口" }]) {
+      const next = change(before, "host", "propose", { ...patch, activity: "吃点好吃的" });
+      assert.equal(M.status(next), "guest_review");
+      assert.equal(next.approvals.guest, null);
+      assert.deepEqual(next.proposal.activities, before.proposal.activities);
+      assert.deepEqual(next.proposal.preferences.details, before.proposal.preferences.details);
+      assert.equal(next.proposal.preferences.detail, "西餐");
+      failsWith(() => M.transition(next, { type: "confirm", role: "guest", version: before.version }), "STALE_VERSION");
+      assert.equal(M.status(change(next, "guest", "confirm")), "confirmed");
+    }
+  }
+  for (const patch of [
+    { activities: ["吃点好吃的"] },
+    { activities: ["吃点好吃的", "喝杯咖啡", "散个步"] },
+    { preferences: { details: { "吃点好吃的": "火锅" } } },
+    { preferences: { hints: [] } },
+    { activity: "散个步" },
+  ]) failsWith(() => change(finalized, "host", "propose", patch), "INVALID_ACTIVITY_SELECTION");
+  const coffee = change(finalized, "host", "propose", { activity: "喝杯咖啡" });
+  assert.equal(coffee.proposal.preferences.detail, "安静的小店");
+  assert.equal(coffee.approvals.guest, null);
+});
+
+test("guest range edits reopen host selection while schedule edits preserve the selected activity", () => {
+  const response = openResponse();
+  const finalized = change(response, "host", "finalize", { activity: "吃点好吃的" });
+  for (const patch of [
+    { activities: ["喝杯咖啡"] },
+    { activities: ["吃点好吃的", "喝杯咖啡", "散个步"] },
+    { preferences: { details: { "吃点好吃的": "火锅" } } },
+  ]) {
+    const next = change(finalized, "guest", "propose", patch);
+    assert.equal(next.proposal.activity, "");
+    assert.equal(next.proposal.preferences.detail, "");
+    assert.equal(next.approvals.host, null);
+    assert.equal(M.status(next), "host_review");
+    failsWith(() => change(next, "host", "confirm"), "ACTIVITY_SELECTION_REQUIRED");
+    assert.equal(M.status(change(next, "host", "finalize", { activity: next.proposal.activities[0] })), "confirmed");
+  }
+  for (const patch of [{ date: "2099-10-11" }, { time: "19:00" }, { place: "公园门口" }]) {
+    const next = change(finalized, "guest", "propose", patch);
+    assert.equal(next.proposal.activity, "吃点好吃的");
+    assert.deepEqual(next.proposal.preferences, finalized.proposal.preferences);
+    assert.equal(next.approvals.host, null);
+    assert.equal(M.status(next), "host_review");
+    assert.equal(M.status(change(next, "host", "confirm")), "confirmed");
+  }
+  failsWith(() => change(response, "guest", "propose", { activity: "喝杯咖啡" }), "INVALID_ACTIVITY_SELECTION");
+  failsWith(() => change(finalized, "guest", "propose", { activity: "喝杯咖啡" }), "INVALID_ACTIVITY_SELECTION");
+  failsWith(() => change(finalized, "guest", "propose", { activity: "吃点好吃的", activities: ["吃点好吃的"] }), "INVALID_ACTIVITY_SELECTION");
+});
