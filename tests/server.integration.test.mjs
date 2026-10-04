@@ -11,10 +11,41 @@ function assertIsolatedDatabase(value) {
   const url = new URL(value);
   assert.ok(['postgres:', 'postgresql:'].includes(url.protocol), 'Use a PostgreSQL TEST_DATABASE_URL');
   assert.ok(['127.0.0.1', 'localhost'].includes(url.hostname), 'The integration database must be local');
-  assert.ok(['55439', '65500'].includes(url.port), 'Only the isolated test PostgreSQL ports 55439 or 65500 are allowed; port 5432 is never accessed');
+  assert.ok(['55439', '65500'].includes(url.port), 'Only the isolated host ports 55439 or 65500 are allowed; host port 5432 is never accessed');
+  // pg permits these query parameters to override the URL's host and port.
+  assert.ok(!url.searchParams.has('host') && !url.searchParams.has('port'), 'TEST_DATABASE_URL must not override its host or port through query parameters');
   assert.equal(decodeURIComponent(url.pathname), '/date_me_maybe_test', 'The integration database must be named date_me_maybe_test');
   return url;
 }
+
+function assertConnectedDatabase(actualDatabase) {
+  assert.equal(actualDatabase.name, 'date_me_maybe_test', 'The connected database must be the dedicated integration test database');
+}
+
+test('integration database guard only permits explicit local test destinations', () => {
+  for (const hostname of ['127.0.0.1', 'localhost']) {
+    for (const port of ['55439', '65500']) {
+      assert.doesNotThrow(() => assertIsolatedDatabase(`postgres://test@${hostname}:${port}/date_me_maybe_test`));
+    }
+  }
+  for (const value of [
+    'https://127.0.0.1:65500/date_me_maybe_test',
+    'postgres://test@example.invalid:65500/date_me_maybe_test',
+    'postgres://test@127.0.0.1:5432/date_me_maybe_test',
+    'postgres://test@127.0.0.1/date_me_maybe_test',
+    'postgres://test@127.0.0.1:65500/date_me_maybe',
+    'postgres://test@127.0.0.1:65500/date_me_maybe_test?host=example.invalid',
+    'postgres://test@127.0.0.1:65500/date_me_maybe_test?port=5432',
+  ]) assert.throws(() => assertIsolatedDatabase(value));
+});
+
+test('connected database identity is independent of an internal port behind a mapping', () => {
+  assertIsolatedDatabase('postgres://test@127.0.0.1:65500/date_me_maybe_test');
+  for (const port of [5432, 65500]) {
+    assert.doesNotThrow(() => assertConnectedDatabase({ name: 'date_me_maybe_test', port }));
+  }
+  assert.throws(() => assertConnectedDatabase({ name: 'another_database', port: 65500 }));
+});
 
 async function freeHttpPort() {
   const server = createServer();
@@ -103,7 +134,7 @@ test('PostgreSQL + HTTP: authentication, invitation ownership, guest capabilitie
   skip: !databaseUrl && 'Set TEST_DATABASE_URL to the isolated date_me_maybe_test database on port 55439 or 65500',
   timeout: 120_000,
 }, async t => {
-  const dbUrl = assertIsolatedDatabase(databaseUrl);
+  assertIsolatedDatabase(databaseUrl);
   // Dynamic imports keep the opt-in suite skippable without a configured server.
   const [{ Pool }, { createApplication }, { migrateDatabase }, { loadConfig }, { createMailer }] = await Promise.all([
     import('pg'), import('../server/app.mjs'), import('../server/db.mjs'),
@@ -118,9 +149,10 @@ test('PostgreSQL + HTTP: authentication, invitation ownership, guest capabilitie
     }
     await pool.end();
   });
-  const actualDatabase = (await pool.query('SELECT current_database() AS name, inet_server_port() AS port')).rows[0];
-  assert.equal(actualDatabase.name, 'date_me_maybe_test');
-  assert.equal(Number(actualDatabase.port), Number(dbUrl.port));
+  // The URL guard owns the client destination. PostgreSQL may listen on a
+  // different internal port (for example CI's host 65500 -> container 5432).
+  const actualDatabase = (await pool.query('SELECT current_database() AS name')).rows[0];
+  assertConnectedDatabase(actualDatabase);
   const port = await freeHttpPort();
   const origin = `http://127.0.0.1:${port}`;
   const config = loadConfig({
