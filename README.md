@@ -26,7 +26,7 @@ A playful date invitation app with a shy seal, a runaway “let me think” butt
 
 ## 本地启动
 
-需要 **Node.js 22+、npm 和专用 PostgreSQL 数据库**。后端依赖锁定在 `package-lock.json`；认证使用 Better Auth **1.7.7**。
+需要 **Node.js 22.x、npm 和专用 PostgreSQL 数据库**。本地已使用 22.22.3 验收，`engines.node` 固定在 22.x，避免部署平台自动选择不同主版本。后端依赖锁定在 `package-lock.json`；认证使用 Better Auth **1.7.7**。
 
 ```bash
 git clone https://github.com/cyberpinkman/date-me-maybe.git

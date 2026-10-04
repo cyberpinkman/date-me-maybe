@@ -1,0 +1,21 @@
+# Credentials stay in the deployment's server-side environment variables.
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Local dependencies, repository metadata and test output are not deployment inputs.
+node_modules/
+.git/
+.vercel/
+.DS_Store
+*.log
+coverage/
+test-results/
+playwright-report/
+
+# Keep app.mjs, server/, src/, db/, assets/, scripts/ and the generated public/
+# and dist/ files available to the Express build and any prebuilt deployment.

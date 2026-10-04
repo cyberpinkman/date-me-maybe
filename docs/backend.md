@@ -6,7 +6,7 @@
 
 ## 本地数据库和配置
 
-使用 Node.js 22+、npm 及独立的 PostgreSQL 实例或开发数据库。开发库和集成测试库必须分开；不要将迁移或测试指向已有业务库。
+使用 Node.js 22.x、npm 及独立的 PostgreSQL 实例或开发数据库。本地验收使用 22.22.3，`package.json` 与 lockfile 固定在 22.x，部署平台仅在该主版本内更新。开发库和集成测试库必须分开；不要将迁移或测试指向已有业务库。
 
 以下示例假定已经有一台专用 PostgreSQL 实例监听 `127.0.0.1:65500`。使用该实例的管理员连接 `postgres` 库，在 `psql` 中执行：
 
@@ -172,6 +172,8 @@ Better Auth 1.7.7 的迁移检测器还可能对限流表的 `lastRequest` 字�
 根目录 `app.mjs` 按 [Vercel Express 入口约定](https://vercel.com/docs/frameworks/backend/express)默认导出 Express 应用，在模块初始化时创建一个可复用的 PostgreSQL 连接池，并接入 `@vercel/functions` 的 [`attachDatabasePool`](https://vercel.com/docs/functions/functions-api-reference/vercel-functions-package#attachdatabasepool)，供平台在实例挂起前管理空闲连接。入口不会监听端口或自动执行迁移；本地仍使用 `server/start.mjs`。
 
 `npm run build` 从同一份前端源码生成内容相同的 `dist/index.html` 和 `public/index.html`。本地 Express 使用前者；Vercel Express 适配器不通过 `express.static()` 提供文件，后者由平台静态资源层提供。`vercel.json` 把 `/i/:token` 重写到该页面，并将隐私与安全响应头应用到静态资源和 API；API 仍由 Express 处理。构建产物不读取服务端环境变量，`public/index.html` 与 `dist/` 均不提交到 Git。
+
+`.vercelignore` 显式排除本地 `.env`、密钥文件和测试输出，保留 `.env.example` 及应用构建所需文件。使用 CLI 发布前，应通过 `vercel deploy --dry --format=json` 检查实际上传清单；此清单检查仍需在发布流程中执行，不能只凭 `.gitignore` 推断上传范围。
 
 正式环境需要 HTTPS `APP_ORIGIN`、持久 PostgreSQL、服务端随机密钥，并至少配置 Google 或 Resend 登录渠道；生产模式拒绝启用本地邮件箱。Preview 与 Production 的服务端环境变量需分别配置，origin、OAuth 回调与数据库目标须匹配该环境，不从请求 Host 推导。数据库迁移需要单独执行，不能依赖访问页面时自动建表；远程数据库 TLS、连接额度及与函数所在区域的距离仍需按所选数据库服务确认。
 
