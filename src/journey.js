@@ -151,7 +151,7 @@ function journeyView(x) {
     "再具体一点",
     "我们的小约定",
   ];
-  return `<section class="journey-shell" aria-label="收到邀请的完整体验"><div class="journey-topbar"><button class="journey-back" data-action="${index > 0 ? "journey-back" : "host"}" aria-label="${index > 0 ? "返回上一步" : "查看发起人视角"}">${icon("back", 18)}</button><span>${titles[index]}</span><span class="scene-count">${String(index + 1).padStart(2, "0")} / 07</span></div><article class="invitation-card scene-card journey-scene-${g.scene}" aria-live="polite">${sceneContent(x, g)}</article><div class="journey-progress" aria-hidden="true">${order.map((_, i) => `<i class="${i <= index ? "filled" : ""}"></i>`).join("")}</div><p class="journey-outside"><button data-action="host">原型演示 · 查看发起人视角</button></p></section>`;
+  return `<section class="journey-shell" aria-label="只给你的邀请"><div class="journey-topbar">${index > 0 ? `<button class="journey-back" data-action="journey-back" aria-label="返回上一步">${icon("back", 18)}</button>` : '<span class="journey-back-placeholder" aria-hidden="true">♡</span>'}<span>${titles[index]}</span><span class="scene-count">${String(index + 1).padStart(2, "0")} / 07</span></div><article class="invitation-card scene-card journey-scene-${g.scene}" aria-live="polite">${sceneContent(x, g)}</article><div class="journey-progress" aria-hidden="true">${order.map((_, i) => `<i class="${i <= index ? "filled" : ""}"></i>`).join("")}</div><p class="journey-outside">只属于你们的一份小心意。</p></section>`;
 }
 function sceneContent(x, g) {
   if (g.scene === "invite")
@@ -249,7 +249,6 @@ async function journeyAction(a, el) {
     const next = await updateRecord({
       type: "respond",
       version: g.version,
-      role: "guest",
       proposal: guestProposal(),
     });
     guestJourney = null;

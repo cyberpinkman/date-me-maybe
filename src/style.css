@@ -1779,3 +1779,47 @@ body[data-view="guest"] .footer {
     font-size: 25px;
   }
 }
+
+/* Account and delivery screens keep the invitation's playful paper language. */
+.account-wrap { max-width: 620px; margin: 46px auto 70px; }
+.account-card { padding: 42px; background: var(--paper, #fffdfa); border: 1.5px solid var(--ink); border-radius: 22px; box-shadow: 6px 6px 0 var(--ink); }
+.account-card h1 { font-size: clamp(26px, 4vw, 37px); line-height: 1.45; margin: 12px 0 18px; }
+.account-card > .sub { line-height: 1.9; margin-bottom: 28px; }
+.google-button { margin-top: 24px; background: #fff; }
+.google-letter { font: 700 21px Arial, sans-serif; color: #4285f4; }
+.account-divider { display: flex; align-items: center; gap: 15px; color: var(--muted); font-size: 12px; margin: 22px 0; }
+.account-divider::before, .account-divider::after { content: ''; height: 1px; background: #e2d6d9; flex: 1; }
+.account-message { color: #9c4166; font-size: 13px; line-height: 1.8; margin-top: 18px; min-height: 24px; }
+.account-secondary { display: flex; justify-content: space-between; gap: 12px; margin-top: 14px; }
+.account-back { margin-top: 20px; }
+.account-nav { font-size: 12px !important; color: var(--muted) !important; }
+.dev-mailbox { margin-top: 20px; padding: 16px; background: #f6efe7; border: 1px dashed #bc9c7e; border-radius: 12px; font-size: 12px; }
+.dev-mailbox p { line-height: 1.8; margin: 6px 0; }
+.dev-mailbox ul { list-style: none; margin: 12px 0 0; padding: 0; }
+.dev-mailbox li { display: flex; justify-content: space-between; gap: 15px; padding: 7px 0; overflow-wrap: anywhere; border-top: 1px solid #e2d6ca; }
+.dev-mailbox code { font-size: 16px; font-weight: 700; letter-spacing: 2px; }
+.share-box { margin: 30px 0 18px; }
+.share-box input { font-size: 12px; color: #735561; }
+.share-box .actions { flex-wrap: wrap; gap: 12px; }
+.share-box a.btn { text-decoration: none; }
+.share-box .hint { margin-top: 14px; line-height: 1.8; }
+.loading-state { min-height: 55vh; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 20px; padding: 40px 24px; }
+.loading-heart { font-size: 64px; color: #ce7198; }
+.loading-state p { max-width: 440px; line-height: 1.8; }
+.journey-back-placeholder { width: 32px; color: #a87989; text-align: center; }
+.list-head-actions { display: flex; align-items: center; gap: 18px; }
+.guest-result-header { max-width: 490px; margin: 20px auto; color: var(--muted); font-size: 13px; }
+body[data-audience="guest"] .site-header { justify-content: center; }
+body[data-audience="guest"] .brand { cursor: default; }
+@media (max-width: 640px) {
+  .account-wrap { margin: 18px 22px 38px; }
+  .account-card { padding: 29px 23px; }
+  .account-card h1 { font-size: 27px; }
+  .site-header .nav { gap: 12px; }
+  .site-header .nav button { font-size: 12px; }
+  .account-nav { font-size: 11px !important; }
+  .list-head { gap: 18px; align-items: flex-start; }
+  .list-head-actions { gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+  .share-box .actions .btn { flex: 1 1 150px; justify-content: center; }
+  .guest-result-header { padding: 0 8px; }
+}

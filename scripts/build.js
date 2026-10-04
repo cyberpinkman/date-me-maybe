@@ -6,7 +6,7 @@ const read = (file) => fs.readFileSync(path.join(root, file), "utf8");
 const mascot = fs
   .readFileSync(path.join(root, "assets/mascot.png"))
   .toString("base64");
-const modules = ["model.js", "store.js", "runaway.js", "journey.js", "app.js"];
+const modules = ["model.js", "runaway.js", "journey.js", "api-client.js", "account.js", "app.js"];
 const scripts =
   `window.MASCOT_DATA='data:image/png;base64,${mascot}';\n` +
   modules.map((file) => read(`src/${file}`)).join("\n");
@@ -21,6 +21,10 @@ for (const [marker, content] of [
   html = html.replace(marker, () => content);
 }
 
-fs.mkdirSync(path.join(root, "dist"), { recursive: true });
-fs.writeFileSync(path.join(root, "dist/index.html"), html);
-console.log(`Built dist/index.html (${Buffer.byteLength(html)} bytes)`);
+// Local Express serves dist; Vercel's Express adapter serves public via its CDN.
+// Both are generated from exactly the same source and contain no server env vars.
+for (const directory of ["dist", "public"]) {
+  fs.mkdirSync(path.join(root, directory), { recursive: true });
+  fs.writeFileSync(path.join(root, directory, "index.html"), html);
+}
+console.log(`Built dist/index.html and public/index.html (${Buffer.byteLength(html)} bytes each)`);

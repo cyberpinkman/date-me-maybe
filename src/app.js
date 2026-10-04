@@ -1,5 +1,5 @@
-/* Prototype scope: browser-local invitations, explicit role simulation, no remote delivery.
-   Shared invariant: confirmed means both roles accepted the same complete proposal version. */
+/* Accounts and invitations are server-backed. The invitation URL selects the
+   recipient boundary; only the server chooses identity, ownership, and role. */
 const $ = (s) => document.querySelector(s);
 const esc = (x) =>
   String(x ?? "").replace(
@@ -84,53 +84,87 @@ let draft = defaultDraft(),
   view = "create",
   role = "host",
   currentId = null,
-  selectedTime = -1,
   modal = null;
-const storageKey = "meet-once-prototype-v1";
-const readInvites = () => {
-  const rows = JSON.parse(localStorage.getItem(storageKey) || "[]");
-  return Array.isArray(rows) ? rows : [];
-};
-const store = InviteStore({
-  read: readInvites,
-  write: (rows) => localStorage.setItem(storageKey, JSON.stringify(rows)),
-  lock: (fn) =>
-    navigator.locks
-      ? navigator.locks.request(storageKey, fn)
-      : Promise.reject(
-          new Error("这个浏览器暂不支持原型的同步保存，请在新版浏览器中打开"),
-        ),
-});
-let invitations = [];
-try {
-  invitations = store.all();
-} catch {}
-window.addEventListener("storage", (event) => {
-  if (event.key !== storageKey) return;
+const guestToken = location.pathname.match(/^\/i\/([^/]+)\/?$/)?.[1] || null;
+let invitations = [], booting = true, bootError = "", actionBusy = false, stateEpoch = 0;
+function mergeInvitation(invitation) {
+  const index = invitations.findIndex((item) => item.id === invitation.id);
+  if (index < 0) invitations.push(invitation);
+  else invitations[index] = invitation;
+  return invitation;
+}
+async function refreshInvitations() {
+  if (!sessionUser || guestToken) return;
+  invitations = (await InviteAPI.get("/api/invitations")).invitations;
+}
+function invitationEndpoint() {
+  return guestToken
+    ? `/api/guest/${encodeURIComponent(guestToken)}`
+    : `/api/invitations/${encodeURIComponent(currentId)}`;
+}
+async function refreshCurrent() {
+  const data = await InviteAPI.get(invitationEndpoint());
+  mergeInvitation(data.invitation);
+  return data.invitation;
+}
+async function boot() {
+  booting = true;
+  bootError = "";
+  render();
   try {
-    invitations = store.all();
-    if (currentId && !current()) {
-      currentId = null;
-      view = "list";
-      modal = null;
+    appConfig = await InviteAPI.get("/api/config");
+    if (guestToken) {
+      role = "guest";
+      const result = await InviteAPI.get(`/api/guest/${encodeURIComponent(guestToken)}`);
+      invitations = [result.invitation];
+      currentId = result.invitation.id;
+      view = InviteModel.status(result.invitation) === "waiting" ? "guest" : "result";
+    } else {
+      const restored = restoreCreationDraft();
+      sessionUser = (await InviteAPI.get("/api/session")).user;
+      if (sessionUser) await refreshInvitations();
+      const query = new URLSearchParams(location.search);
+      const selectedId = query.get("invitation");
+      if (selectedId && sessionUser) {
+        currentId = selectedId;
+        await refreshCurrent();
+        view = "host";
+      } else if (selectedId) {
+        requireAccount("list");
+      } else if (query.has("login")) {
+        view = sessionUser ? (restored && accountIntent === "list" ? "list" : "create") : "account";
+        if (!sessionUser) accountMessage = "登录没有完成，草稿还在，可以重新试一次。";
+        history.replaceState(null, "", "/");
+      } else if (query.has("error")) {
+        view = "account";
+        accountMessage = "登录没有完成，草稿还在，可以重新试一次。";
+      }
     }
-    render();
-    toast("邀请有更新，已显示最新安排");
-  } catch {
-    toast("暂时无法读取邀请记录");
+  } catch (error) {
+    bootError = error.status === 404 && guestToken
+      ? "这份邀请暂时找不到了，检查一下链接是否完整。"
+      : InviteAPI.message(error);
   }
-});
+  booting = false;
+  render();
+}
 const current = () => invitations.find((x) => x.id === currentId);
 const statusNames = {
   waiting: "等对方回应",
-  host_review: "等发起人确认",
-  guest_review: "等接收者确认",
+  host_review: "等确认见面安排",
+  guest_review: "等确认新安排",
   details: "还差一个见面地点",
   confirmed: "已经约好啦",
   declined: "这次先不了",
 };
+const statusText = (x) => {
+  const status = InviteModel.status(x);
+  if (status === "host_review") return role === "host" ? "等你说好" : "等 TA 说好";
+  if (status === "guest_review") return role === "guest" ? "等你说好" : "等 TA 说好";
+  return statusNames[status];
+};
 const statusBadge = (x) =>
-  `<span class="status-label ${InviteModel.status(x)}">${InviteModel.status(x) === "confirmed" ? "●" : "○"} ${statusNames[InviteModel.status(x)]}</span>`;
+  `<span class="status-label ${InviteModel.status(x)}">${InviteModel.status(x) === "confirmed" ? "●" : "○"} ${statusText(x)}</span>`;
 function mascot() {
   return window.MASCOT_DATA
     ? `<div class="mascot"><img src="${window.MASCOT_DATA}" alt="抱着爱心信封、害羞期待的小海豹"></div>`
@@ -140,38 +174,36 @@ function planRows(d, p) {
   const slots = p ? [p] : d.mode === "fixed" ? [d.options[0]] : d.options;
   return `<div class="plan-strip"><div>${icon("calendar", 15)}<span>${slots.map((s) => `${fmt(s.date)} ${esc(s.time)}`).join("<br>")}</span></div><div>${icon(activities.find((a) => a[0] === (p?.activity || d.activity))?.[1] || "heart", 15)}<span>${esc(p?.activity || d.activity)}</span></div><div>${icon("pin", 15)}<span>${esc(p?.place || d.place || "地点想和你一起选")}</span></div></div>`;
 }
-function invitationCard(d, interactive = false) {
-  return `<article class="invitation-card"><div class="card-top"><span>A LITTLE INVITATION</span><span class="mini-heart">♡</span></div>${mascot()}<div class="to-name">给 ${esc(d.to || "那个想见的人")}</div><h2>可以和我<br>一起约会吗？</h2><p class="personal-message">${esc(d.message)}</p>${planRows(d)}${interactive ? guestActions(d) : `<div class="btn primary wide card-action" aria-hidden="true">好呀，我愿意 ${icon("heart", 16)}</div><div class="card-footer">一份藏不住的小心意，等你来拆开</div>`}<div class="card-sign">装作不在意，其实很期待。<br><b>— ${esc(d.from || "你的名字")}</b></div></article>`;
-}
-function guestActions(x) {
-  const s = InviteModel.status(x);
-  if (s !== "waiting")
-    return `<button class="btn primary wide" data-action="guest-result">查看我们的安排 ${icon("arrow")}</button>`;
-  return `${x.mode === "flexible" ? `<p class="hint">选一个方便的时间，也可以提个新的。</p>${x.options.map((t, i) => `<button class="choice-time ${selectedTime === i ? "selected" : ""}" data-action="select-time" data-index="${i}" aria-pressed="${selectedTime === i}">${fmt(t.date)} ${esc(t.time)} <span>${selectedTime === i ? "●" : "○"}</span></button>`).join("")}` : ""}<div class="response-actions"><button class="btn primary wide" data-action="accept" ${x.mode === "flexible" && selectedTime < 0 ? "disabled" : ""}>好呀，我愿意 ${icon("heart", 16)}</button><button class="btn wide" data-action="change">想去，换个安排</button></div>`;
+function invitationCard(d) {
+  return `<article class="invitation-card"><div class="card-top"><span>A LITTLE INVITATION</span><span class="mini-heart">♡</span></div>${mascot()}<div class="to-name">给 ${esc(d.to || "那个想见的人")}</div><h2>可以和我<br>一起约会吗？</h2><p class="personal-message">${esc(d.message)}</p>${planRows(d)}<div class="btn primary wide card-action" aria-hidden="true">好呀，我愿意 ${icon("heart", 16)}</div><div class="card-footer">一份藏不住的小心意，等你来拆开</div><div class="card-sign">装作不在意，其实很期待。<br><b>— ${esc(d.from || "你的名字")}</b></div></article>`;
 }
 function render() {
   cleanupRunaway();
   cleanupRunaway = () => {};
-  if (
-    view === "guest" &&
-    current() &&
-    InviteModel.status(current()) !== "waiting"
-  ) {
+  if (view === "guest" && current() && InviteModel.status(current()) !== "waiting") {
     view = "result";
     guestJourney = null;
   }
   document.body.dataset.view = view;
-  document.title = "见一面 · 暧昧期邀约原型";
-  $("#root").innerHTML =
-    `<div class="demo-bar">交互原型 · 可切换双方视角体验 <span>／ 数据只保存在此浏览器，尚未连接真实分享与通知</span></div><header class="site-header"><button class="brand" data-action="home" aria-label="见一面首页"><span class="brand-mark">${icon("heart", 21)}</span>见一面</button><nav class="nav" aria-label="主导航"><button class="scene-demo-link" data-action="demo-journey">体验收邀</button><button class="${view === "create" || view === "ready" ? "active" : ""}" data-action="home">制作邀请</button><button class="${view === "list" || view === "host" ? "active" : ""}" data-action="list">我的邀请${invitations.length ? ` · ${invitations.length}` : ""}</button></nav></header><main>${view === "create" ? editor() : view === "ready" ? readyView() : view === "list" ? listView() : view === "host" ? hostView() : guestView()}</main><footer class="footer"><span>见一面 · 先从一次小小的邀请开始</span><span>认真邀请，轻松回应。</span></footer><div id="modal-root"></div><div id="toast-root" role="status" aria-live="polite"></div>`;
+  document.body.dataset.audience = guestToken ? "guest" : "host";
+  document.title = guestToken ? "有一份只给你的邀请 · 见一面" : "见一面 · Date Me Maybe";
+  const brand = `<span class="brand-mark">${icon("heart", 21)}</span>见一面`;
+  const header = `<header class="site-header">${guestToken ? `<span class="brand">${brand}</span>` : `<button class="brand" data-action="home" aria-label="见一面首页">${brand}</button><nav class="nav" aria-label="主导航"><button class="${view === "create" || view === "ready" ? "active" : ""}" data-action="home">制作邀请</button><button class="${view === "list" || view === "host" ? "active" : ""}" data-action="list">我的邀约${sessionUser && invitations.length ? ` · ${invitations.length}` : ""}</button>${sessionUser ? `<button class="account-nav" data-action="logout" title="${esc(sessionUser.email || sessionUser.name)}">退出登录</button>` : '<button class="account-nav" data-action="login">登录</button>'}</nav>`}</header>`;
+  const content = booting
+    ? '<section class="loading-state" role="status"><span class="loading-heart">♡</span><p>正在打开这份小心意…</p></section>'
+    : bootError
+      ? `<section class="loading-state"><span class="loading-heart">♡</span><h2>还没能打开。</h2><p class="sub">${esc(bootError)}</p><button class="btn primary" data-action="retry-boot">再试一次</button></section>`
+      : view === "account" ? accountView() : view === "create" ? editor() : view === "ready" ? readyView() : view === "list" ? listView() : view === "host" ? hostView() : guestView();
+  $("#root").innerHTML = `${header}<main>${content}</main><footer class="footer"><span>见一面 · 先从一次小小的邀请开始</span><span>认真邀请，轻松回应。</span></footer><div id="modal-root"></div><div id="toast-root" role="status" aria-live="polite"></div>`;
   bind();
   if (modal) renderModal();
 }
+
 function editor() {
   return `<div class="workbench"><section class="editor"><p class="eyebrow">FOR SOMEONE SPECIAL</p><h1>有点想见你。<br>那就，认真约一次。</h1><p class="sub" style="margin-top:10px">把没说出口的话，变成一份小邀请。</p><div class="steps">${["写点心里话", "安排见面", "检查邀请"].map((s, i) => `${i ? '<span class="step-line"></span>' : ""}<div class="step ${step === i ? "active" : step > i ? "done" : ""}"><i>${step > i ? "✓" : i + 1}</i>${s}</div>`).join("")}</div><div class="form-section">${step === 0 ? firstStep() : step === 1 ? secondStep() : thirdStep()}</div></section><aside class="preview-column" aria-label="邀请实时预览"><div class="preview-label"><span>对方会收到这样一份邀请</span><span class="live-label">实时预览</span></div><div class="stage" id="live-preview">${invitationCard(draft)}</div><p class="preview-note">只要真诚一点，就已经很可爱了。</p></aside></div>`;
 }
 function firstStep() {
-  return `<div class="columns"><div class="field"><label class="label" for="from">你的昵称</label><input id="from" data-field="from" maxlength="16" value="${esc(draft.from)}" placeholder="对方怎么称呼你"></div><div class="field"><label class="label" for="to">想邀请谁</label><input id="to" data-field="to" maxlength="16" value="${esc(draft.to)}" placeholder="TA 的昵称"></div></div><div class="field"><div class="label">选一种开场语气 <small>文案可以自己改</small></div><div class="tone-group">${tones.map((t) => `<button class="tone ${draft.tone === t[0] ? "selected" : ""}" data-action="tone" data-tone="${t[0]}" aria-pressed="${draft.tone === t[0]}">${t[1]}</button>`).join("")}</div></div><div class="field"><label class="label" for="message">想对 TA 说的话 <small id="word-count">${draft.message.length}/120</small></label><textarea id="message" data-field="message" maxlength="120">${esc(draft.message)}</textarea><p class="hint">上面是示例昵称和文案，改成你们之间的表达就好。</p></div><div id="form-error" class="error" role="alert"></div><div class="actions"><button class="btn primary" data-action="next">下一步，安排见面 ${icon("arrow")}</button></div>`;
+  return `<div class="columns"><div class="field"><label class="label" for="from">你的昵称</label><input id="from" data-field="from" maxlength="16" value="${esc(draft.from)}" placeholder="对方怎么称呼你"></div><div class="field"><label class="label" for="to">想邀请谁</label><input id="to" data-field="to" maxlength="16" value="${esc(draft.to)}" placeholder="TA 的昵称"></div></div><div class="field"><div class="label">选一种开场语气 <small>文案可以自己改</small></div><div class="tone-group">${tones.map((t) => `<button class="tone ${draft.tone === t[0] ? "selected" : ""}" data-action="tone" data-tone="${t[0]}" aria-pressed="${draft.tone === t[0]}">${t[1]}</button>`).join("")}</div></div><div class="field"><label class="label" for="message">想对 TA 说的话 <small id="word-count">${draft.message.length}/120</small></label><textarea id="message" data-field="message" maxlength="120">${esc(draft.message)}</textarea><p class="hint">换上你们的昵称，再写一句只有 TA 能懂的话。</p></div><div id="form-error" class="error" role="alert"></div><div class="actions"><button class="btn primary" data-action="next">下一步，安排见面 ${icon("arrow")}</button></div>`;
 }
 function secondStep() {
   return `<div class="field"><div class="label">时间，怎么安排？</div><div class="mode-grid"><button class="mode-choice ${draft.mode === "fixed" ? "selected" : ""}" data-action="mode" data-mode="fixed" aria-pressed="${draft.mode === "fixed"}"><strong>我有一个小计划</strong><span>定好时间，邀请 TA 加入</span></button><button class="mode-choice ${draft.mode === "flexible" ? "selected" : ""}" data-action="mode" data-mode="flexible" aria-pressed="${draft.mode === "flexible"}"><strong>留一点选择给 TA</strong><span>给两个时间，一起决定</span></button></div>${draft.options
@@ -190,18 +222,25 @@ function thirdStep() {
     .map((s) => `${fmt(s.date)} ${esc(s.time)}`)
     .join(
       "<br>",
-    )}</span></div><div class="summary-line"><span>一起做</span><span>${esc(draft.activity)}<small class="hint" style="display:block">TA 接受邀请后，还可以选择氛围和具体偏好。</small></span></div><div class="summary-line"><span>见面地点</span><span>${esc(draft.place || "留给我们一起选")}</span></div></div><div class="note-box">${draft.mode === "fixed" && draft.place ? "TA 会先回应邀请，再逐步选择见面时间、氛围和具体偏好，最后交给你确认。" : "TA 愿意后，还会一起确认" + (!draft.place ? "地点" : "最后的时间") + "，再生成正式约定。"}</div><div class="actions"><button class="text-btn" data-action="prev">回去改改</button><button class="btn primary" data-action="create">生成这份邀请 ${icon("heart")}</button></div>`;
+    )}</span></div><div class="summary-line"><span>一起做</span><span>${esc(draft.activity)}<small class="hint" style="display:block">TA 愿意后，还可以选一点自己的小心思。</small></span></div><div class="summary-line"><span>见面地点</span><span>${esc(draft.place || "留给我们一起选")}</span></div></div><div class="note-box">${draft.mode === "fixed" && draft.place ? "TA 选好安排后，回来一起说好这次见面吧。" : "TA 愿意后，还会一起确认" + (!draft.place ? "地点" : "最后的时间") + "，再一起说好这次见面。"}</div><div class="actions"><button class="text-btn" data-action="prev">回去改改</button><button class="btn primary" data-action="create">把邀请准备好 ${icon("heart")}</button></div>`;
+}
+function shareControls(x) {
+  return `<div class="share-box"><label class="label" for="share-link">发给 ${esc(x.to)} 的专属链接</label><input id="share-link" value="${esc(x.shareUrl || "")}" readonly aria-label="邀请分享链接"><div class="actions"><button class="btn primary" data-action="copy-link">${icon("copy")}复制邀请链接</button><a class="btn" href="${esc(x.shareUrl || "#")}" target="_blank" rel="noopener noreferrer">打开这份邀请 ${icon("arrow")}</a></div><p class="hint">把链接发给 TA，回来看看有没有收到心动的回应。</p></div>`;
 }
 function readyView() {
   const x = current();
-  return `<div class="workbench"><section class="editor"><div class="success-check">${icon("check", 25)}</div><p class="eyebrow">READY TO MAKE A LITTLE MOVE</p><h1>心意准备好了。<br>剩下的，交给勇气。</h1><p class="sub" style="margin-top:17px">给 ${esc(x.to)} 的邀请已保存在「我的邀请」。</p><div class="actions"><button class="btn primary" data-action="guest">体验对方收到邀请 ${icon("arrow")}</button></div><div class="actions"><button class="btn" data-action="copy">${icon("copy")}复制邀请文字</button><button class="text-btn" data-action="host">查看邀请</button></div><div class="note-box" style="margin-top:35px">当前是原型演示：可以切换双方身份走完整流程。真实链接分享、跨设备回复和消息通知尚未接入。</div></section><aside class="preview-column"><div class="stage">${invitationCard(x)}</div></aside></div>`;
+  return `<div class="workbench"><section class="editor"><div class="success-check">${icon("check", 25)}</div><p class="eyebrow">READY TO MAKE A LITTLE MOVE</p><h1>心意准备好了。<br>剩下的，交给勇气。</h1><p class="sub" style="margin-top:17px">给 ${esc(x.to)} 的邀请已保存在「我的邀约」。</p>${shareControls(x)}<div class="actions"><button class="text-btn" data-action="host">查看邀请和回应 ${icon("arrow")}</button></div></section><aside class="preview-column"><div class="stage">${invitationCard(x)}</div></aside></div>`;
 }
+
 function switchHeader() {
-  return `<div class="view-header"><button class="text-btn" data-action="list">${icon("back", 15)} 我的邀请</button><div class="role-switch" aria-label="原型体验身份"><button data-action="host" class="${role === "host" ? "selected" : ""}">我是发起人</button><button data-action="guest" class="${role === "guest" ? "selected" : ""}">我是接收者</button></div></div>`;
+  return guestToken
+    ? `<div class="view-header guest-result-header"><span>我们的小约定</span><button class="text-btn" data-action="refresh">刷新回应 ${icon("arrow", 15)}</button></div>`
+    : `<div class="view-header"><button class="text-btn" data-action="list">${icon("back", 15)} 我的邀约</button><button class="text-btn" data-action="refresh">刷新回应 ${icon("arrow", 15)}</button></div>`;
 }
+
 function guestView() {
   const x = current();
-  if (!x) return listView();
+  if (!x) return '<div class="empty">这份邀请暂时无法打开。</div>';
   return view === "guest"
     ? journeyView(x)
     : `${switchHeader()}<div class="recipient-area">${resultCard(x, true)}</div>`;
@@ -255,10 +294,10 @@ function hostView() {
     confirmed: "这次见面，<br>终于有了具体模样。",
     declined: "收到了 TA 的回复，<br>这次就先到这里。",
   };
-  return `${switchHeader()}<div class="host-layout"><section class="host-copy">${statusBadge(x)}<h1>${titles[s]}</h1><p class="sub">${s === "waiting" ? "邀请发出以后，也给对方轻松回答的空间。" : s === "confirmed" ? "时间、地点和心意，都在这张小约定里。" : s === "declined" ? "回应已经保存。感谢对方的坦诚，也照顾好自己的心情。" : "双方确认同一个安排，才会生成正式约定。"}</p>${x.proposal && s !== "declined" ? `<div class="summary-lines"><div class="summary-line"><span>时间</span><span>${fmt(x.proposal.date)} ${esc(x.proposal.time)}</span></div><div class="summary-line"><span>活动</span><span>${esc(x.proposal.activity)}</span></div><div class="summary-line"><span>地点</span><span>${esc(x.proposal.place || "待一起确定")}</span></div>${x.proposal.preferences?.detail ? `<div class="summary-line"><span>具体偏好</span><span>${esc(x.proposal.preferences.detail)}</span></div>` : ""}${x.proposal.preferences?.hints?.length ? `<div class="summary-line"><span>小暗示</span><span>${x.proposal.preferences.hints.map(esc).join(" · ")}</span></div>` : ""}</div>` : ""}${resultActions(x)}${s === "waiting" ? '<div class="actions"><button class="btn primary" data-action="guest">体验接收方回应 ' + icon("arrow") + '</button></div><div class="actions"><button class="btn" data-action="copy">复制邀请文字 ' + icon("copy") + "</button></div>" : ""}<div class="note-box">原型中的两个身份共用当前浏览器里的记录。切换上方身份，可以体验对方看到的状态。</div></section>${resultCard(x)}</div>`;
+  return `${switchHeader()}<div class="host-layout"><section class="host-copy">${statusBadge(x)}<h1>${titles[s]}</h1><p class="sub">${s === "waiting" ? "把专属链接发给 TA，再回来看看心意有没有回音。" : s === "confirmed" ? "时间、地点和心意，都在这张小约定里。" : s === "declined" ? "回应已经保存。感谢对方的坦诚，也照顾好自己的心情。" : "把时间和地点一起说好，就等见面啦。"}</p>${x.proposal && s !== "declined" ? `<div class="summary-lines"><div class="summary-line"><span>时间</span><span>${fmt(x.proposal.date)} ${esc(x.proposal.time)}</span></div><div class="summary-line"><span>活动</span><span>${esc(x.proposal.activity)}</span></div><div class="summary-line"><span>地点</span><span>${esc(x.proposal.place || "待一起确定")}</span></div>${x.proposal.preferences?.detail ? `<div class="summary-line"><span>小心思</span><span>${esc(x.proposal.preferences.detail)}</span></div>` : ""}${x.proposal.preferences?.hints?.length ? `<div class="summary-line"><span>小暗示</span><span>${x.proposal.preferences.hints.map(esc).join(" · ")}</span></div>` : ""}</div>` : ""}${resultActions(x)}${shareControls(x)}<p class="hint">${s === "confirmed" ? "小约定收好啦，见面的期待也留好了。" : s === "host_review" ? "TA 的小心思都在这里，看看是不是正合你意。" : s === "waiting" ? "有新回应时，这里就会告诉你。" : "想看看有没有新消息，点一下「刷新回应」就好。"}</p></section>${resultCard(x)}</div>`;
 }
 function listView() {
-  return `<section class="list-wrap"><div class="list-head"><div><p class="eyebrow">MY LITTLE INVITATIONS</p><h1>我的邀请</h1></div><button class="btn primary" data-action="new">＋ 再写一份</button></div>${
+  return `<section class="list-wrap"><div class="list-head"><div><p class="eyebrow">MY LITTLE INVITATIONS</p><h1>我的邀约</h1></div><div class="list-head-actions"><button class="text-btn" data-action="refresh">刷新</button><button class="btn primary" data-action="new">＋ 再写一份</button></div></div>${
     invitations.length
       ? `<div class="invite-list">${invitations
           .slice()
@@ -269,13 +308,14 @@ function listView() {
           )
           .join(
             "",
-          )}</div><p class="hint" style="margin-top:18px">这里只保存在此浏览器中创建的原型记录。</p>`
+          )}</div><p class="hint" style="margin-top:18px">想见谁、约到哪一步，都替你记在这里。</p>`
       : '<div class="empty"><h2>第一份心意，还等你落笔。</h2><p class="sub">有个想见的人，就从这里开始。</p><button class="btn primary" data-action="new">写一份小邀请 ' +
         icon("heart") +
         "</button></div>"
   }</section>`;
 }
 function bind() {
+  if (view === "account") bindAccount();
   if (view === "guest") bindJourneyInputs();
   document
     .querySelectorAll("[data-action]")
@@ -285,6 +325,7 @@ function bind() {
   document.querySelectorAll("[data-field]").forEach((el) =>
     el.addEventListener("input", () => {
       draft[el.dataset.field] = el.value;
+      saveCreationDraft();
       updatePreview();
       if ($("#word-count"))
         $("#word-count").textContent = draft.message.length + "/120";
@@ -293,6 +334,7 @@ function bind() {
   document.querySelectorAll("[data-slot]").forEach((el) =>
     el.addEventListener("input", () => {
       draft.options[Number(el.dataset.slot)][el.dataset.part] = el.value;
+      saveCreationDraft();
       updatePreview();
     }),
   );
@@ -325,113 +367,103 @@ function validateStep() {
 }
 async function updateRecord(event) {
   const x = current();
-  const expectedVersion = event.version ?? x.version;
+  const body = { type: event.type, version: event.version ?? x.version };
+  if (event.proposal) body.proposal = event.proposal;
   try {
-    const next = await store.transition(x.id, {
-      ...event,
-      version: expectedVersion,
-      role: event.role ?? role,
-    });
-    invitations = store.all();
-    return next;
+    const result = await InviteAPI.mutate(invitationEndpoint() + "/actions", body);
+    return mergeInvitation(result.invitation);
   } catch (error) {
-    invitations = store.all();
-    modal = null;
-    render();
+    if (error.status === 409) {
+      await refreshCurrent();
+      modal = null;
+      render();
+      error.message = "安排刚刚有更新，已经帮你换成新的了。看看，再说好吧。";
+      error.userSafe = true;
+    }
     throw error;
   }
 }
 async function action(a, el) {
+  if (actionBusy) return;
+  actionBusy = true;
+  stateEpoch++;
+  if (el?.tagName === "BUTTON") el.disabled = true;
   try {
-    if (a.startsWith("journey-")) {
-      await journeyAction(a, el);
+    if (a === "retry-boot") { await boot(); return; }
+    if (a.startsWith("journey-")) { await journeyAction(a, el); return; }
+    if (!guestToken && await accountAction(a)) {
+      render();
       return;
     }
-    if (a === "demo-journey") {
-      const sample = {
-        ...defaultDraft(),
-        from: "小宇",
-        to: "你",
-        mode: "flexible",
-        isDemo: true,
-      };
-      const x =
-        invitations.find(
-          (i) =>
-            i.isDemo &&
-            InviteModel.status(i) === "waiting" &&
-            new Date(`${i.options[0].date}T${i.options[0].time}`) > new Date(),
-        ) || (await store.create(sample));
-      invitations = store.all();
-      currentId = x.id;
-      role = "guest";
-      guestJourney = null;
-      view = "guest";
-    } else if (a === "home") {
+    if (a === "home") {
+      if (guestToken) { location.assign("/"); return; }
       view = "create";
       role = "host";
+      history.replaceState(null, "", "/");
     } else if (a === "new") {
       draft = defaultDraft();
       step = 0;
       view = "create";
       role = "host";
+      saveCreationDraft();
+      history.replaceState(null, "", "/");
+    } else if (a === "login") {
+      requireAccount("list");
     } else if (a === "list") {
-      view = "list";
+      if (guestToken) return;
+      if (requireAccount("list")) {
+        await refreshInvitations();
+        view = "list";
+      }
       role = "host";
+      history.replaceState(null, "", "/");
     } else if (a === "next") {
       const error = validateStep();
-      if (error) {
-        $("#form-error").textContent = error;
-        return;
-      }
+      if (error) { $("#form-error").textContent = error; return; }
       step++;
-    } else if (a === "prev") step--;
+      saveCreationDraft();
+    } else if (a === "prev") { step--; saveCreationDraft(); }
     else if (a === "tone") {
       draft.tone = el.dataset.tone;
       draft.message = tones.find((t) => t[0] === draft.tone)[2];
-    } else if (a === "mode") draft.mode = el.dataset.mode;
-    else if (a === "activity") draft.activity = el.dataset.activity;
+      saveCreationDraft();
+    } else if (a === "mode") { draft.mode = el.dataset.mode; saveCreationDraft(); }
+    else if (a === "activity") { draft.activity = el.dataset.activity; saveCreationDraft(); }
     else if (a === "create") {
-      draft.from = draft.from.trim();
-      draft.to = draft.to.trim();
-      draft.place = draft.place.trim();
-      const x = await store.create({
-        ...draft,
-        options: draft.options.slice(0, draft.mode === "fixed" ? 1 : 2),
-      });
-      invitations = store.all();
-      currentId = x.id;
+      if (!requireAccount("create")) { render(); return; }
+      const optionCount = draft.mode === "fixed" ? 1 : 2;
+      const options = draft.options.slice(0, optionCount).map(({ date, time }) => ({ date, time }));
+      if (options.length !== optionCount) throw InviteAPI.userError("见面时间还没填完整，回去检查一下吧。");
+      const cleanDraft = {
+        from: draft.from.trim(), to: draft.to.trim(), tone: draft.tone,
+        message: draft.message.trim(), mode: draft.mode, options,
+        activity: draft.activity, place: draft.place.trim(),
+        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Shanghai",
+      };
+      const result = await InviteAPI.mutate("/api/invitations", { draft: cleanDraft });
+      mergeInvitation(result.invitation);
+      currentId = result.invitation.id;
       view = "ready";
+      history.replaceState(null, "", "/?invitation=" + encodeURIComponent(currentId));
+      try { sessionStorage.removeItem(draftStorageKey); } catch {}
       celebrate();
     } else if (a === "open") {
+      if (guestToken) return;
       currentId = el.dataset.id;
+      await refreshCurrent();
       role = "host";
       view = "host";
+      history.replaceState(null, "", "/?invitation=" + encodeURIComponent(currentId));
     } else if (a === "host") {
+      if (guestToken) return;
       role = "host";
       view = "host";
-    } else if (a === "guest") {
-      role = "guest";
-      view = InviteModel.status(current()) === "waiting" ? "guest" : "result";
-      selectedTime = -1;
-    } else if (a === "guest-result") view = "result";
-    else if (a === "select-time") selectedTime = Number(el.dataset.index);
-    else if (a === "accept") {
-      const x = current();
-      if (x.mode === "flexible") {
-        if (selectedTime < 0) return;
-        await updateRecord({
-          type: "propose",
-          role: "guest",
-          proposal: {
-            ...x.options[selectedTime],
-            place: x.place,
-            activity: x.activity,
-          },
-        });
-      } else await updateRecord({ type: "confirm", role: "guest" });
-      view = "result";
-      celebrate();
+    } else if (a === "refresh") {
+      if (view === "list") await refreshInvitations();
+      else await refreshCurrent();
+      render();
+      toast("已经是最新回应啦");
+      return;
     } else if (a === "confirm") {
       await updateRecord({ type: "confirm" });
       celebrate();
@@ -439,38 +471,60 @@ async function action(a, el) {
       modal = { type: "proposal", version: current().version };
       renderModal();
       return;
-    } else if (a === "close-modal") {
-      closeModal();
-      return;
-    } else if (a === "submit-proposal") {
-      const date = $("#proposal-date").value,
-        time = $("#proposal-time").value,
+    } else if (a === "close-modal") { closeModal(); return; }
+    else if (a === "submit-proposal") {
+      const date = $("#proposal-date").value, time = $("#proposal-time").value,
         place = $("#proposal-place").value.trim();
       if (!date || !time || new Date(`${date}T${time}`) <= new Date()) {
         $("#proposal-error").textContent = "请选一个完整、还没到来的时间。";
         return;
       }
-      await updateRecord({
-        type: "propose",
-        version: modal.version,
-        proposal: { date, time, place },
-      });
+      await updateRecord({ type: "propose", version: modal.version, proposal: { date, time, place } });
       closeModal();
-      view = role === "host" ? "host" : "result";
-    } else if (a === "copy") {
-      await copyText();
+      view = guestToken ? "result" : "host";
+    } else if (a === "copy-link") {
+      try {
+        await navigator.clipboard.writeText(current().shareUrl);
+        toast("专属链接已复制，发给 TA 吧");
+      } catch {
+        $("#share-link")?.select();
+        toast("请复制已选中的邀请链接");
+      }
       return;
-    } else if (a === "save-card") {
-      await saveCard();
-      return;
-    }
+    } else if (a === "copy") { await copyText(); return; }
+    else if (a === "save-card") { await saveCard(); return; }
     render();
-    if (!["tone", "mode", "activity", "select-time"].includes(a))
-      window.scrollTo({ top: 0, behavior: "instant" });
-  } catch (e) {
-    toast(e.message);
+    if (!["tone", "mode", "activity"].includes(a)) window.scrollTo({ top: 0, behavior: "instant" });
+  } catch (error) {
+    if (error.status === 401 && !guestToken) {
+      const intent = view === "create" ? "create" : "list";
+      resetSenderIdentity();
+      requireAccount(intent);
+      render();
+    }
+    if (view === "account") {
+      accountMessage = InviteAPI.message(error);
+      const message = $("#account-message");
+      if (message) message.textContent = accountMessage;
+    } else toast(InviteAPI.message(error));
+  } finally {
+    actionBusy = false;
+    if (el?.isConnected && el.tagName === "BUTTON") el.disabled = false;
   }
 }
+// Refresh server state only on reading screens. Draft inputs and a recipient's
+// unfinished scene remain untouched by background updates.
+setInterval(async () => {
+  if (booting || bootError || actionBusy || modal || document.hidden || !["host", "list", "result"].includes(view)) return;
+  const before = JSON.stringify(invitations), epoch = stateEpoch, readingView = view;
+  try {
+    const result = await InviteAPI.get(view === "list" ? "/api/invitations" : invitationEndpoint());
+    if (epoch !== stateEpoch || readingView !== view || modal || actionBusy) return;
+    if (view === "list") invitations = result.invitations;
+    else mergeInvitation(result.invitation);
+    if (before !== JSON.stringify(invitations)) render();
+  } catch { /* Explicit refresh provides a visible retry without interrupting reading. */ }
+}, 15000);
 let toastTimer;
 function toast(text) {
   clearTimeout(toastTimer);
@@ -498,7 +552,7 @@ function renderModal() {
   priorFocus = document.activeElement;
   if (modal.type === "card") {
     $("#modal-root").innerHTML =
-      `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div class="modal-head"><h2 id="modal-title">把小约定收好。</h2><button class="close" data-action="close-modal" aria-label="关闭">×</button></div><p>长按图片保存，也可以下载到相册或文件。</p><img src="${modal.data}" alt="生成的约定卡图片" style="display:block;width:100%;height:auto;border-radius:9px;margin-bottom:18px"><a class="btn primary wide" href="${modal.data}" download="我们的小约定.png" style="text-decoration:none">下载约定卡 ${icon("download")}</a></section></div>`;
+      `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div class="modal-head"><h2 id="modal-title">把小约定收好。</h2><button class="close" data-action="close-modal" aria-label="关闭">×</button></div><p>把这份小约定存下来，见面前再偷偷看一眼。</p><img src="${modal.data}" alt="我们的小约定" style="display:block;width:100%;height:auto;border-radius:9px;margin-bottom:18px"><a class="btn primary wide" href="${modal.data}" download="我们的小约定.png" style="text-decoration:none">下载约定卡 ${icon("download")}</a></section></div>`;
     $("#modal-root")
       .querySelector("[data-action]")
       .addEventListener("click", closeModal);
@@ -507,7 +561,7 @@ function renderModal() {
   }
   const p = x.proposal || { ...x.options[0], place: x.place };
   $("#modal-root").innerHTML =
-    `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div class="modal-head"><h2 id="modal-title">换个舒服的安排。</h2><button class="close" data-action="close-modal" aria-label="关闭">×</button></div><p>${InviteModel.status(x) === "confirmed" ? "提交新安排后，需要对方重新确认；原来的确认不会沿用。" : "把你方便的时间和地点告诉对方，等 TA 确认。"}</p><div class="columns"><div class="field"><label class="label" for="proposal-date">日期</label><input id="proposal-date" type="date" min="${dateString(new Date())}" value="${esc(p.date)}"></div><div class="field"><label class="label" for="proposal-time">时间</label><input id="proposal-time" type="time" value="${esc(p.time)}"></div></div><div class="field"><label class="label" for="proposal-place">见面地点</label><input id="proposal-place" maxlength="60" placeholder="具体在哪里碰面？" value="${esc(p.place)}"><p class="hint">地点确定后，双方再正式确认约定。</p></div><div class="error" id="proposal-error" role="alert"></div><button class="btn primary wide" data-action="submit-proposal">提议这个安排 ${icon("arrow")}</button></section></div>`;
+    `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div class="modal-head"><h2 id="modal-title">换个舒服的安排。</h2><button class="close" data-action="close-modal" aria-label="关闭">×</button></div><p>${InviteModel.status(x) === "confirmed" ? "换了时间或地点，再和 TA 说好一次。" : "把你方便的时间和地点告诉对方，等 TA 确认。"}</p><div class="columns"><div class="field"><label class="label" for="proposal-date">日期</label><input id="proposal-date" type="date" min="${dateString(new Date())}" value="${esc(p.date)}"></div><div class="field"><label class="label" for="proposal-time">时间</label><input id="proposal-time" type="time" value="${esc(p.time)}"></div></div><div class="field"><label class="label" for="proposal-place">见面地点</label><input id="proposal-place" maxlength="60" placeholder="具体在哪里碰面？" value="${esc(p.place)}"><p class="hint">地点确定后，双方再正式确认约定。</p></div><div class="error" id="proposal-error" role="alert"></div><button class="btn primary wide" data-action="submit-proposal">提议这个安排 ${icon("arrow")}</button></section></div>`;
   $("#modal-root")
     .querySelectorAll("[data-action]")
     .forEach((el) =>
@@ -547,9 +601,9 @@ async function copyText() {
   const text = `${x.to}，可以和我一起约会吗？\n\n${x.message}\n\n${dates}\n${p?.activity || x.activity}${p?.preferences?.detail ? " · " + p.preferences.detail : ""}\n${p?.place || x.place || "地点一起选"}${p?.preferences?.hints?.length ? "\n小暗示：" + p.preferences.hints.join(" · ") : ""}\n\n——${x.from}`;
   try {
     await navigator.clipboard.writeText(text);
-    toast("邀请文字已复制，可以自行发给对方");
+    toast("邀请文字已复制，发给 TA 吧");
   } catch {
-    toast("当前浏览器无法直接复制，请在邀请卡中选取文字");
+    toast("没能直接复制，试试长按邀请文字吧");
   }
 }
 async function saveCard() {
@@ -557,7 +611,7 @@ async function saveCard() {
     s = InviteModel.status(x),
     p = x.proposal;
   if (!p || s === "declined") {
-    toast("先一起选好一个安排，再生成小约定");
+    toast("先一起选好一个安排，再把小约定收好");
     return;
   }
   const c = document.createElement("canvas"),
@@ -628,7 +682,7 @@ async function saveCard() {
   );
   q.fillStyle = s === "confirmed" ? "#52775d" : "#a55279";
   q.font = "24px sans-serif";
-  q.fillText(s === "confirmed" ? "双方已确认" : statusNames[s], 450, 515);
+  q.fillText(s === "confirmed" ? "我们说好了" : statusText(x), 450, 515);
   q.textAlign = "left";
   let y = 593;
   for (const row of rows) {
@@ -654,4 +708,4 @@ async function saveCard() {
   renderModal();
 }
 
-render();
+boot();
