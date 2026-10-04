@@ -61,15 +61,15 @@ npm start
 
 ## 发布状态
 
-**v0.2 生产发布进行中：用户已完成验收并批准发布，公网最终检查尚未完成。**
+**v0.2 已发布。** 正式域名首页、邀请链接、健康接口与跳转已验证；生产环境的真实邮箱登录、创建邀请、匿名回应、发起人确认及退出登录均已通过。
 
-目标站点为 [opendater.com](https://opendater.com)，`www.opendater.com` 将以 308 跳转到主域名。
+在线使用：[opendater.com](https://opendater.com)。`www.opendater.com` 以 308 跳转到主域名。
 
 | 部分 | 当前发布配置 |
 | --- | --- |
 | 应用 | 独立 Vercel 项目 `opendater`，Express / Node.js 22，运行区域 `sin1` |
 | 数据库 | 独立 Neon Free 数据库 `opendater-db`，区域 `sin1`；仅连接 Production 环境 |
-| 登录 | Resend 邮箱验证码；真实投递与本地登录已验收。Google 尚未配置，因此不显示入口 |
+| 登录 | Resend 邮箱验证码；真实投递与生产登录已验证。Google 尚未配置，因此不显示入口 |
 | 数据迁移 | Production 构建前从云端敏感变量读取直连地址，经 TLS 验证后迁移；其他环境只构建前端 |
 | 部署 | 使用已登录的官方 Vercel CLI；尚未接入 Vercel GitHub App，推送 GitHub 不会自动上线 |
 | 回应更新 | 页面每 15 秒检查更新并支持刷新；没有邀约回执邮件或后台推送 |
