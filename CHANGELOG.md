@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 — 后台版
 
 - 发起人账号、邮箱验证码与可配置 Google 登录；接收者无需登录。
 - PostgreSQL 邀请与回应持久化、个人邀约列表和专属分享链接。
@@ -8,8 +8,11 @@
 - Resend 发信接入，以及仅限本机的开发测试邮件箱。
 - Vercel Express 入口、静态邀请路由、连接池和可信客户端 IP 适配。
 - 全流程公开文案校对与手机登录布局修正。
+- 独立 Vercel `opendater` / Neon `opendater-db` 生产配置，运行与数据库同处 `sin1`；数据库只供 Production 使用。
+- 生产构建前通过云端敏感直连变量执行 TLS 校验与数据库迁移；其他环境只构建前端。
+- Node.js 22 CI：34 项单元/边界测试、14 项真实 PostgreSQL 集成测试通过。
 
-本地后端及 Resend 真实邮件登录已验收；Google 和公网发布仍待单独验证。
+本地后台及 Resend 真实邮件登录已验收，用户已批准发布；[生产发布状态见 README](README.md#发布状态)。本次登录方式为邮箱验证码，Google 尚未配置。当前通过官方 Vercel CLI 部署，GitHub 推送不会自动上线。
 
 ## 0.1.0 — 2026-10-04
 

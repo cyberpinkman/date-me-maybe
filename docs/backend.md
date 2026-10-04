@@ -1,8 +1,8 @@
-# Date Me Maybe · 见一面：后端验收说明
+# Date Me Maybe · 见一面：后端与部署
 
-本文对应本地后端验收版。当前运行方式是 Express 提供同源页面与 API、Better Auth 1.7.7 管理发起人登录、PostgreSQL 保存认证数据和邀请状态。本地 `*.test` 验证码、真实会话与邀请 API 已完成集成验收；Resend 真实邮件投递、用户收件回码和本地登录也已验收通过。Google 与公网环境仍需分别验收。
+本文对应 v0.2 后台版：Express 提供同源页面与 API，Better Auth 1.7.7 管理发起人登录，PostgreSQL 保存认证数据和邀请状态。发起人登录后创建和管理邀请，受邀人通过专属链接免登录回应。
 
-本次没有部署公网服务或修改网站解析。后续域名确定为 `opendater.com`；实际发布和网站 DNS 操作等待用户最终验收。邮件域名验证及专用发送凭据的配置另行进行，不等于网站已上线。
+本地 HTTP、真实 PostgreSQL 集成及 Resend 邮件登录已验收；用户已批准生产发布。[当前发布进度见 README](../README.md#发布状态)。Google 尚未配置，不属于这次上线的登录方式。
 
 ## 本地数据库和配置
 
@@ -44,7 +44,7 @@ cp .env.example .env
 node -e "for (const key of ['AUTH_SECRET','SHARE_TOKEN_SECRET']) console.log(key+'='+require('node:crypto').randomBytes(32).toString('hex'))"
 ```
 
-把输出保存在本地 `.env` 或部署平台的服务端环境变量中。`DATABASE_URL`、认证与分享密钥、Google client secret、Resend key 都不能提交到 Git，也不能打包进 `dist/`、`public/`、浏览器脚本或 DOM。仓库只保留不含真实凭证的 `.env.example`。
+把输出保存在本地 `.env` 或部署平台的服务端环境变量中。`DATABASE_URL`、认证与分享密钥、Google client secret、Resend key 都不能提交到 Git，也不能打包进 `dist/`、`public/`、浏览器脚本或 DOM。`.env`、`.env.production`、`.env.cloud` 均被 Git 和部署上传规则排除；仓库只保留不含真实凭证的 `.env.example`。
 
 `SHARE_TOKEN_SECRET` 用于恢复发起人的既有分享链接，直接替换会导致旧记录无法解密；后续轮换需要设计数据迁移。配置代码允许缺省时沿用 `AUTH_SECRET`，本项目的设置流程要求显式提供两个独立值。
 
@@ -76,7 +76,7 @@ npm start
 | 环境 | 应用 origin | Google 授权回调 URI |
 | --- | --- | --- |
 | 本地 | `http://127.0.0.1:3010` | `http://127.0.0.1:3010/api/auth/callback/google` |
-| 计划中的正式域名 | `https://opendater.com` | `https://opendater.com/api/auth/callback/google` |
+| 正式域名（启用 Google 时） | `https://opendater.com` | `https://opendater.com/api/auth/callback/google` |
 
 Google 返回 Better Auth 回调后，应用继续返回 `/?login=complete`；该页面地址不是应登记的 Google redirect URI。若另用 `localhost` 或其他开发端口，需要让 `APP_ORIGIN` 和 OAuth 控制台配置一致。
 
@@ -86,7 +86,7 @@ Google 返回 Better Auth 回调后，应用继续返回 `/?login=complete`；�
 
 真实投递需要先在 Resend 验证可控的发信域名，并按服务商要求配置邮件 DNS 记录；再创建专用、仅允许发送的 API key，设置该域名下的 `EMAIL_FROM`，例如 `见一面 <hello@opendater.com>`。`.env.example` 中的发件人只是配置示例，不能证明该域名已经验证。
 
-当前代码已经接线，opendater.com 已通过 Resend 域名验证；用户已确认创建仅限该域名的发送凭据，并已接入本机服务端环境；已向用户提供的收信地址发送一封真实登录验证码。Resend 显示 Delivered，用户收件后提供验证码，本地应用登录成功，数据库已验证邮箱及有效会话均确认。以上结果来自真实投递与用户回码，不是由单元测试或 DNS 记录存在推断；生产环境仍需在正式 HTTPS 域名下复验。
+`opendater.com` 已通过 Resend 域名验证，专用发送凭据仅限该域名。已完成真实邮件投递、用户收件回码及本地登录验证；正式站点使用同一邮箱验证码流程，生产结果以正式 HTTPS 域名下的检查为准。
 
 使用真实邮件时将 `DEV_MAILBOX` 设为 `0`，填写 `RESEND_API_KEY` 与有效 `EMAIL_FROM`。邮件 DNS 变更与网站解析独立，不会使 `opendater.com` 的网站自动上线。
 
@@ -155,7 +155,7 @@ TEST_DATABASE_URL='postgres://date_me_maybe:URL_ENCODED_PASSWORD@127.0.0.1:65500
 
 测试覆盖 A/C 两个登录账户及 B/D 两份匿名邀请、越权请求不改变数据、伪造身份字段、无效 token、同版本竞争、幂等完整响应、过期确认、跨源请求、OTP 错误/重放及退出后的旧 cookie。重复运行会保留之前的记录和真实限流状态；每轮只给 A/C 各发一次码，紧接着重跑可能需要等待发码窗口恢复。
 
-测试结果以当前命令输出为准，不固定声称测试数量。本地代码和集成验收通过，不等于 Google、真实邮件、远程数据库或公网行为已验收。
+截至 `cbca314` 后的 Node.js 22 CI，34 项单元/边界测试和 14 项真实 PostgreSQL 集成测试通过。后续修改仍以当前测试输出为准；这些结果不代替正式域名、远程数据库与实际邮件登录的上线检查。
 
 ### 迁移时的已知提示
 
@@ -165,18 +165,46 @@ Better Auth 1.7.7 的迁移检测器还可能对限流表的 `lastRequest` 字�
 
 此说明仅适用于上述字段和别名组合。其他迁移错误、非零退出码或集成失败仍应根据原始原因诊断，不能一概忽略。
 
-## 后续部署前的已知依赖
+## 生产部署
 
-部署与网站 DNS 操作须等用户最终验收。Vercel 所需的本地代码已准备，但本次未部署，也没有完成平台行为或 `opendater.com` 的线上服务验证。旧 v0.1 Release 是纯静态原型；单独发布当前 `dist/index.html` 也无法提供账号和邀请 API。
+当前部署使用独立 Vercel 项目 `opendater`、新加坡 `sin1` 运行区域，以及同区域的 Neon Free `opendater-db`。数据库仅连接该项目的 **Production** 环境，不与其他项目或 Preview 共用。正式 origin 为 `https://opendater.com`；`www.opendater.com` 以 308 跳转到主域名。
 
-根目录 `app.mjs` 按 [Vercel Express 入口约定](https://vercel.com/docs/frameworks/backend/express)默认导出 Express 应用，在模块初始化时创建一个可复用的 PostgreSQL 连接池，并接入 `@vercel/functions` 的 [`attachDatabasePool`](https://vercel.com/docs/functions/functions-api-reference/vercel-functions-package#attachdatabasepool)，供平台在实例挂起前管理空闲连接。入口不会监听端口或自动执行迁移；本地仍使用 `server/start.mjs`。
+### 环境变量与迁移
 
-`npm run build` 从同一份前端源码生成内容相同的 `dist/index.html` 和 `public/index.html`。本地 Express 使用前者；Vercel Express 适配器不通过 `express.static()` 提供文件，后者由平台静态资源层提供。`vercel.json` 把 `/i/:token` 重写到该页面，并将隐私与安全响应头应用到静态资源和 API；API 仍由 Express 处理。构建产物不读取服务端环境变量，`public/index.html` 与 `dist/` 均不提交到 Git。
+| 变量 | Production 用途 |
+| --- | --- |
+| `NODE_ENV` | `production` |
+| `APP_ORIGIN` | `https://opendater.com`；登录、分享链接与请求来源检查使用同一 origin |
+| `DATABASE_URL` | Neon 提供的应用连接，供运行时连接池使用 |
+| `DATABASE_URL_UNPOOLED` | Neon 提供的直连地址，作为敏感变量仅供生产迁移读取 |
+| `AUTH_SECRET`、`SHARE_TOKEN_SECRET` | 两个独立随机值，不提交到 Git 或前端产物 |
+| `RESEND_API_KEY`、`EMAIL_FROM` | 专用发送凭据及已验证发件人，例如 `见一面 <hello@opendater.com>` |
+| `DEV_MAILBOX` | 关闭；生产配置禁止启用本地测试邮件箱 |
+| `GOOGLE_CLIENT_ID`、`GOOGLE_CLIENT_SECRET` | 本次不配置；将来启用时必须同时设置并验收回调 |
 
-`.vercelignore` 显式排除本地 `.env`、密钥文件和测试输出，保留 `.env.example` 及应用构建所需文件。使用 CLI 发布前，应通过 `vercel deploy --dry --format=json` 检查实际上传清单；此清单检查仍需在发布流程中执行，不能只凭 `.gitignore` 推断上传范围。
+`vercel.json` 的构建命令仅在 `VERCEL_ENV=production` 时运行 `scripts/migrate-production.mjs`，成功后再执行 `npm run build`；其他环境只构建前端。
 
-正式环境需要 HTTPS `APP_ORIGIN`、持久 PostgreSQL、服务端随机密钥，并至少配置 Google 或 Resend 登录渠道；生产模式拒绝启用本地邮件箱。Preview 与 Production 的服务端环境变量需分别配置，origin、OAuth 回调与数据库目标须匹配该环境，不从请求 Host 推导。数据库迁移需要单独执行，不能依赖访问页面时自动建表；远程数据库 TLS、连接额度及与函数所在区域的距离仍需按所选数据库服务确认。
+生产迁移脚本要求 `NODE_ENV=production`，从 `DATABASE_URL_UNPOOLED` 读取直连地址，拒绝 pooled 主机，强制 `sslmode=verify-full` 并确认当前数据库连接启用 TLS，再执行认证表和应用表迁移。稳定的直连会话用于维持迁移锁；应用运行时仍使用平台配置的连接池地址。迁移失败会使构建停止，不需要等用户访问页面后才建表。
 
-认证和匿名邀请的两个限流入口统一使用 `server/client-ip.mjs`：本地从连接 socket 读取；只有服务端环境 `VERCEL=1` 时，才读取 Vercel 平台提供的 `x-vercel-forwarded-for`。地址必须是单个有效 IPv4 或 IPv6；缺失、数组、代理链或非法地址统一使用保守的共享地址值，不回退到请求中的 `X-Forwarded-For`。传给 Better Auth 的 IP 头由服务器覆盖。本地矩阵已覆盖伪造头、平台有效头以及缺失或非法值；这验证了代码分支，实际平台头和代理链仍须上线验收。[Vercel 请求头约定](https://vercel.com/docs/headers/request-headers)
+直连凭据保留在云平台的敏感环境变量中：部署不需要将其导出到本地，也不需要在本地解密生产密钥。不要把 `.env.production`、`.env.cloud` 或凭据导出文件加入 Git。Preview 若以后需要登录与数据库，必须另外配置独立数据库、密钥和匹配的 origin；目前的生产数据库不自动供 Preview 使用。
 
-此外还需验收所选运行时对 Express 的适配、数据库连接管理与 Resend 投递；若启用 Google，还需验收真实授权回调，确认日志和构建产物没有泄露服务器凭证。完成这些步骤后，才能将本地验收结论扩展到生产环境。
+### 运行和发布方式
+
+根目录 `app.mjs` 按 [Vercel Express 入口约定](https://vercel.com/docs/frameworks/backend/express)默认导出 Express 应用，复用 PostgreSQL 连接池，并接入 [`attachDatabasePool`](https://vercel.com/docs/functions/functions-api-reference/vercel-functions-package#attachdatabasepool) 管理实例挂起前的空闲连接。入口不监听本地端口，也不执行迁移；本地仍使用 `server/start.mjs`。
+
+`npm run build` 生成内容一致的 `dist/index.html` 和 `public/index.html`。本地 Express 使用前者，Vercel 静态资源层提供后者；`/i/:token` 重写到邀请页面，API 由 Express 处理。构建不读取服务端密钥，产物不提交到 Git。**仅托管 HTML 无法运行后台版。**
+
+当前未安装或接入 Vercel GitHub App，使用已登录的官方 Vercel CLI 发布。GitHub 推送只更新代码和运行 CI，不会触发站点部署。
+
+```bash
+vercel deploy --dry --format=json  # 先核对上传文件清单
+vercel deploy --prod               # 明确发布到 Production
+```
+
+发布前确认 CLI 绑定的是此项目，并检查上传清单；`.vercelignore` 排除本地环境文件、密钥和测试输出，保留 `.env.example` 及构建需要的文件。不要只依据 `.gitignore` 判断上传范围。
+
+### 上线检查
+
+正式部署后，检查 `/api/health`、主域名 HTTPS、`www` 跳转、登录验证码真实投递、登录后邀约列表、跨设备邀请回应及双方确认。还要确认本地测试邮件箱不可见、日志和前端产物不含凭据。完成这些检查后，才能将本地验收结论扩展为生产行为验证；当前结果统一记录在 [README 发布状态](../README.md#发布状态)。
+
+认证和匿名邀请限流统一使用 `server/client-ip.mjs`：本地读取连接 socket；只有服务端 `VERCEL=1` 时读取平台提供的 `x-vercel-forwarded-for`。地址必须是单个有效 IPv4 或 IPv6；缺失、数组、代理链或非法地址使用保守的共享值，不回退信任客户端 `X-Forwarded-For`。传给 Better Auth 的 IP 头由服务器覆盖。相关边界已纳入 CI，实际平台头仍须在部署环境确认。[Vercel 请求头约定](https://vercel.com/docs/headers/request-headers)

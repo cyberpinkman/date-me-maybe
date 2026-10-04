@@ -5,7 +5,7 @@
 
 把“想见你”做成一份俏皮的小邀请。为暧昧期设计的小海豹、会逃跑的按钮和逐步展开的选择，帮助两个人安排下一次见面。
 
-A playful date invitation app with a shy seal, a runaway “let me think” button, and a scene-by-scene invitation journey. Vanilla JavaScript on the frontend; Express, PostgreSQL, and Better Auth on the backend. This branch is a local backend acceptance build, not a production deployment.
+A playful date invitation app with a shy seal, a runaway “let me think” button, and a scene-by-scene invitation journey. Vanilla JavaScript on the frontend; Express, PostgreSQL, and Better Auth on the backend. The backend edition requires an application server and PostgreSQL; it cannot run as a standalone static page.
 
 <img src="docs/assets/runaway-demo.gif" alt="收邀互动：按钮反复换位并更换文案，愿意按钮保持固定" width="420">
 
@@ -59,18 +59,24 @@ npm start
 
 `DEV_MAILBOX=1` 仅允许回环地址访问，因此当前本地链接适用于同一台电脑上的验收。跨设备使用需要后续配置可访问的服务地址和真实登录渠道。
 
-## 已接入与待验收
+## 发布状态
 
-| 能力 | 当前状态 |
+**v0.2 生产发布进行中：用户已完成验收并批准发布，公网最终检查尚未完成。**
+
+目标站点为 [opendater.com](https://opendater.com)，`www.opendater.com` 将以 308 跳转到主域名。
+
+| 部分 | 当前发布配置 |
 | --- | --- |
-| 邮箱验证码、会话、邀请隔离 | 已通过本地真实 PostgreSQL + HTTP 集成验收；邮箱使用 `*.test` 邮件箱 |
-| Google 登录 | 已接线并支持配置；尚无真实 OAuth 凭证，未完成真实 Google 登录验收 |
-| Resend 邮件 | opendater.com 域名与受限发送凭据已接入；真实邮件投递、用户收件回码和本地验证码登录均已验收通过 |
-| 邀请回应更新 | 页面每 15 秒轮询及手动刷新；没有邮件回执或后台推送通知 |
-| Vercel 运行适配 | Express 入口、静态页面路由、连接池管理与平台 IP 读取已准备；尚未部署或完成平台验收 |
-| 公网服务 | 本次未部署；后续域名已选定为 `opendater.com`，发布及网站 DNS 操作等待用户最终验收 |
+| 应用 | 独立 Vercel 项目 `opendater`，Express / Node.js 22，运行区域 `sin1` |
+| 数据库 | 独立 Neon Free 数据库 `opendater-db`，区域 `sin1`；仅连接 Production 环境 |
+| 登录 | Resend 邮箱验证码；真实投递与本地登录已验收。Google 尚未配置，因此不显示入口 |
+| 数据迁移 | Production 构建前从云端敏感变量读取直连地址，经 TLS 验证后迁移；其他环境只构建前端 |
+| 部署 | 使用已登录的官方 Vercel CLI；尚未接入 Vercel GitHub App，推送 GitHub 不会自动上线 |
+| 回应更新 | 页面每 15 秒检查更新并支持刷新；没有邀约回执邮件或后台推送 |
 
-旧 **v0.1 静态 Release 仅为交互原型**。当前构建的 `dist/index.html` 需要同源后端和数据库；单独放到静态托管上不构成这套后端应用。
+GitHub `main` 已包含后台实现。Node.js 22 CI 已通过 **34 项单元/边界测试和 14 项真实 PostgreSQL 集成测试**；这不代替正式域名下的上线检查。部署配置、迁移与环境隔离见[后端说明](docs/backend.md#生产部署)。
+
+**旧 v0.1 静态 Release 仅为交互原型。** 当前 `dist/index.html` 与 `public/index.html` 都需要同源后端和数据库；单独发布 HTML 无法提供登录、分享和跨设备回应。
 
 ## 开发与验证
 
@@ -99,7 +105,7 @@ scripts/             前端构建与数据库迁移入口
 app.mjs              Vercel Express 入口；本地仍使用 server/start.mjs
 vercel.json          Vercel 构建、邀请页面路由与安全响应头
 tests/               单元、HTTP 边界及真实数据库集成测试
-docs/backend.md      配置、接口、权限模型及上线前依赖
+docs/backend.md      配置、接口、权限模型及生产部署
 docs/assets/         收邀视觉和交互演示素材
 ```
 

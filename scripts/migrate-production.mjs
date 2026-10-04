@@ -5,7 +5,7 @@ import { createPool } from '../server/db.mjs';
 if (process.env.NODE_ENV !== 'production') throw new Error('Use this command only in the production environment.');
 if (!process.env.DATABASE_URL_UNPOOLED) throw new Error('DATABASE_URL_UNPOOLED is required for production migrations.');
 const url = new URL(process.env.DATABASE_URL_UNPOOLED);
-if (!['postgres:', 'postgresql:'].includes(url.protocol) || url.hostname.includes('-pooler.')) {
+if (!['postgres:', 'postgresql:'].includes(url.protocol) || url.hostname.includes('-pooler.') || url.searchParams.has('host') || url.searchParams.has('port')) {
   throw new Error('Production migrations require a direct PostgreSQL session connection.');
 }
 url.searchParams.set('sslmode', 'verify-full');
