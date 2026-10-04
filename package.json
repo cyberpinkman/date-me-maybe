@@ -1,0 +1,31 @@
+{
+  "name": "date-me-maybe",
+  "version": "0.1.0",
+  "private": true,
+  "description": "见一面：俏皮可爱的暧昧期邀约小工具，带连续逃跑按钮和完整收邀情境。",
+  "license": "MIT",
+  "author": "cyberpinkman",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "npm run build && node scripts/serve.js",
+    "build": "node scripts/build.js",
+    "test": "node --test tests/*.test.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cyberpinkman/date-me-maybe.git"
+  },
+  "bugs": {
+    "url": "https://github.com/cyberpinkman/date-me-maybe/issues"
+  },
+  "homepage": "https://github.com/cyberpinkman/date-me-maybe#readme",
+  "keywords": [
+    "dating",
+    "invitation",
+    "interactive",
+    "vanilla-js",
+    "prototype"
+  ]
+}
