@@ -2,7 +2,7 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "express",
   "installCommand": "npm ci",
-  "buildCommand": "npm run build",
+  "buildCommand": "if [ \"$VERCEL_ENV\" = production ]; then node scripts/migrate-production.mjs; fi && npm run build",
   "rewrites": [
     { "source": "/i/:token", "destination": "/index.html" }
   ],
