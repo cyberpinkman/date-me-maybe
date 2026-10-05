@@ -43,30 +43,56 @@ function preferencesInput(value, allowed = ['hints', 'detail', 'details'], activ
     for (const [activity, selection] of Object.entries(value.details)) detailValues(activity, selection);
   }
 }
-function slot(value, zone) {
+function validateHints(value) {
+  if (!Array.isArray(value) || value.length > 8 || value.some(hint => !hints.has(hint))) fail('再选一下想要的氛围吧。');
+}
+const fullRange = value => Object.hasOwn(value, 'timeOptions') || Object.hasOwn(value, 'placeOptions');
+function slot(value, zone, future = true) {
   fields(value, ['date', 'time']);
   const { date, time } = value;
   if (typeof date !== 'string' || !/^20\d{2}-\d{2}-\d{2}$/.test(date) || typeof time !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) fail('请填写完整的日期和时间。');
   const parsed = new Date(date + 'T00:00:00Z');
   if (!Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date) fail('日期不存在。');
-  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date()).map(p => [p.type, p.value]));
-  const now = `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
-  if (`${date}T${time}` <= now) fail('请选择还没到来的见面时间。');
+  if (future) {
+    const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date()).map(p => [p.type, p.value]));
+    const now = `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
+    if (`${date}T${time}` <= now) fail('请选择还没到来的见面时间。');
+  }
   return { date, time };
+}
+function scopeOptions(value, zone, future, partial = false) {
+  const result = {};
+  if (!partial || Object.hasOwn(value, 'timeOptions')) {
+    if (!Array.isArray(value.timeOptions) || value.timeOptions.length < 1 || value.timeOptions.length > 3) fail('请提供一到三个完整的候选时间。');
+    result.timeOptions = value.timeOptions.map(option => slot(option, zone, future));
+  }
+  if (!partial || Object.hasOwn(value, 'placeOptions')) {
+    if (!Array.isArray(value.placeOptions) || value.placeOptions.length < 1 || value.placeOptions.length > 3) fail('请提供一到三个见面地点。');
+    result.placeOptions = value.placeOptions.map(place => text(place, '见面地点', 60));
+  }
+  return result;
 }
 export function requestId(value) {
   if (!isUuid(value)) fail('这次没能保存，刷新页面后再试一次吧。');
   return value;
 }
 export function validateDraft(input) {
-  fields(input, ['from', 'to', 'tone', 'message', 'mode', 'options', 'activity', 'place', 'timeZone']);
+  fields(input, ['from', 'to', 'tone', 'message', 'mode', 'options', 'activity', 'place', 'timeZone', 'plan']);
   const timeZone = timezone(input.timeZone);
-  if (!['gentle', 'direct', 'playful'].includes(input.tone) || !['open', 'fixed', 'flexible'].includes(input.mode)) fail('再选一下开场语气和见面时间吧。');
+  if (!['gentle', 'direct', 'playful'].includes(input.tone) || !['host', 'open', 'fixed', 'flexible'].includes(input.mode)) fail('再选一下开场语气和见面时间吧。');
   const invitation = { from: text(input.from, '昵称', 16), to: text(input.to, '对方昵称', 16), message: text(input.message, '邀请语', 120), tone: input.tone, mode: input.mode, timeZone };
-  if (input.mode === 'open') {
+  if (input.mode !== 'host' && 'plan' in input) fail('请按邀请模式填写见面安排。');
+  if (input.mode === 'host' || input.mode === 'open') {
     if (input.options !== undefined && (!Array.isArray(input.options) || input.options.length !== 0)) fail('这份邀请先留一点期待，具体安排等 TA 来选。');
     if (text(input.activity ?? '', '活动', 60, true) || text(input.place ?? '', '见面地点', 60, true)) fail('这份邀请先留一点期待，具体安排等 TA 来选。');
-    return { ...invitation, options: [], activity: '', place: '' };
+    if (input.mode === 'open') return { ...invitation, options: [], activity: '', place: '' };
+    fields(input.plan, ['timeOptions', 'placeOptions', 'activities', 'preferences']);
+    const options = scopeOptions(input.plan, timeZone, true);
+    activityRange(input.plan.activities);
+    preferencesInput(input.plan.preferences, ['hints', 'details'], input.plan.activities);
+    validateHints(input.plan.preferences.hints);
+    fields(input.plan.preferences.details, input.plan.activities);
+    return { ...invitation, options: [], activity: '', place: '', plan: { ...input.plan, ...options } };
   }
   if (!activities.has(input.activity)) fail('选一种想一起做的事吧。');
   const count = input.mode === 'fixed' ? 1 : 2;
@@ -77,25 +103,40 @@ export function validateDraft(input) {
 }
 export function validateEvent(input, role) {
   fields(input, ['type', 'version', 'proposal', 'requestId']);
-  if (input.type === 'finalize' && role !== 'host') throw new ApiError(422, 'INVALID_ROLE', '只有发起人可以敲定活动。');
-  const types = role === 'host' ? ['confirm', 'propose', 'finalize'] : ['respond', 'confirm', 'propose'];
+  const types = role === 'host' ? ['confirm', 'propose', 'finalize'] : ['respond', 'confirm', 'propose', 'finalize'];
   if (!types.includes(input.type)) fail('这次没能保存，刷新页面后再试一次吧。');
   if (!Number.isSafeInteger(input.version) || input.version < 1) fail('这次没能保存，刷新页面后再试一次吧。');
   requestId(input.requestId);
   if (input.type === 'finalize') {
-    fields(input.proposal, ['activity']);
-    if (typeof input.proposal.activity !== 'string' || !input.proposal.activity.trim()) fail('从 TA 愿意的活动里选一种吧。');
+    fields(input.proposal, ['date', 'time', 'place', 'activity', 'detail']);
+    for (const [key, value] of Object.entries(input.proposal)) text(value, '最终安排', key === 'date' ? 10 : key === 'time' ? 5 : 60, true);
   } else if (input.type !== 'confirm') {
-    fields(input.proposal, ['date', 'time', 'place', 'activity', 'activities', 'preferences']);
+    fields(input.proposal, ['date', 'time', 'place', 'activity', 'activities', 'preferences', 'timeOptions', 'placeOptions']);
+    if (fullRange(input.proposal)) {
+      scopeOptions(input.proposal, undefined, false, input.type === 'propose');
+      if (input.type === 'respond') activityRange(input.proposal.activities);
+    }
     if ('activities' in input.proposal) activityRange(input.proposal.activities);
     if ('preferences' in input.proposal) preferencesInput(input.proposal.preferences, 'activities' in input.proposal ? ['hints', 'details'] : undefined, input.proposal.activities);
   } else if (input.proposal !== undefined) fail('先保存想改的安排，再确认一下吧。');
   return input;
 }
 export function validateProposal(proposal, zone, input = proposal) {
-  slot({ date: proposal.date, time: proposal.time }, zone);
+  const hasFullRange = fullRange(proposal);
+  if (hasFullRange) {
+    scopeOptions(proposal, zone, false);
+    activityRange(proposal.activities);
+    // Only newly offered time ranges must all be future. Historical consent
+    // keeps expired alternatives; choosing a still-future slot remains valid.
+    if (fullRange(input)) scopeOptions(input, zone, true, true);
+    if (proposal.date || proposal.time) {
+      slot({ date: proposal.date, time: proposal.time }, zone);
+      if (!proposal.timeOptions.some(option => option.date === proposal.date && option.time === proposal.time)) fail('请从对方提供的候选时间中选择。');
+    } else if (proposal.date !== '' || proposal.time !== '') fail('请填写完整的日期和时间。');
+    if (proposal.place !== '' && !proposal.placeOptions.includes(proposal.place)) fail('请从对方提供的地点中选择。');
+  } else slot({ date: proposal.date, time: proposal.time }, zone);
   const hasRange = Object.hasOwn(proposal, 'activities');
-  text(proposal.place, '见面地点', 60, !hasRange);
+  text(proposal.place, '见面地点', 60, hasFullRange || !hasRange);
   if (hasRange) {
     activityRange(proposal.activities);
     if (proposal.activity !== '' && !proposal.activities.includes(proposal.activity)) throw new ApiError(422, 'INVALID_ACTIVITY_SELECTION', '从 TA 愿意的活动里选一种吧。');
@@ -105,10 +146,12 @@ export function validateProposal(proposal, zone, input = proposal) {
   // Inspect the original payload too: canonicalization must not erase invalid
   // members, excess entries, or details outside the actual accepted range.
   if (input !== proposal && input.preferences !== undefined) preferencesInput(input.preferences, hasRange ? ['hints', 'details'] : ['hints', 'detail'], proposal.activities);
-  if (!Array.isArray(prefs?.hints) || prefs.hints.length > 8 || prefs.hints.some(hint => !hints.has(hint))) fail('再选一下想要的氛围吧。');
+  validateHints(prefs.hints);
   if (hasRange) {
     fields(prefs.details, proposal.activities);
-    const alias = proposal.activity ? detailValues(proposal.activity, prefs.details[proposal.activity] ?? []).join('、') : '';
-    if ('detail' in prefs && prefs.detail !== alias) fail('再选一下这次见面的小安排吧。');
+    const choices = proposal.activity ? detailValues(proposal.activity, prefs.details[proposal.activity] ?? []) : [];
+    if (hasFullRange) {
+      if (typeof prefs.detail !== 'string' || (prefs.detail !== '' && !choices.includes(prefs.detail))) fail('请从所选活动的具体偏好中选择一项。');
+    } else if ('detail' in prefs && prefs.detail !== choices.join('、')) fail('再选一下这次见面的小安排吧。');
   } else if (prefs.detail !== '' && !details[proposal.activity].includes(prefs.detail)) fail('再选一下这次见面的小安排吧。');
 }

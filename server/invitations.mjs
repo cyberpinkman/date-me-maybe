@@ -88,11 +88,10 @@ export function createInvitationService({ pool, config }) {
       if (event.type === 'respond' && row.state.responded) throw new ApiError(409, 'ALREADY_RESPONDED', '这份邀请已经回应，请查看最新安排。');
       if (event.type === 'confirm' && !row.state.proposal) throw new ApiError(422, 'MISSING_PROPOSAL', '请先选一个时间。');
       const next = modelResult(() => Model.transition(row.state, { ...event, role }));
-      if (event.type !== 'confirm') {
-        // Validate the exact canonical proposal that will be persisted, after the
-        // pure model enforces role/range rules and before either database write.
-        validateProposal(next.proposal, row.state.timeZone || 'Asia/Shanghai', event.proposal);
-      }
+      // Validate the exact canonical proposal that will be persisted, after the
+      // model enforces role/range rules and before either database write. A
+      // confirmation also commits consent to its selected future schedule.
+      validateProposal(next.proposal, row.state.timeZone || 'Asia/Shanghai', event.proposal ?? {});
       const updated = await client.query('UPDATE invitations SET state=$1,version=$2,updated_at=now() WHERE id=$3 RETURNING *', [next, next.version, row.id]);
       await client.query('INSERT INTO invitation_requests(invitation_id,actor,request_id,request_hash,response) VALUES($1,$2,$3,$4,$5)', [row.id, role, event.requestId, hash, next]);
       return serialize(updated.rows[0], role === 'host');

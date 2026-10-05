@@ -6,7 +6,7 @@ const read = (file) => fs.readFileSync(path.join(root, file), "utf8");
 const mascot = fs
   .readFileSync(path.join(root, "assets/mascot.png"))
   .toString("base64");
-const modules = ["model.js", "runaway.js", "journey.js", "api-client.js", "account.js", "app.js"];
+const modules = ["model.js", "runaway.js", "journey.js", "api-client.js", "account.js", "card-export.js", "app.js"];
 const scripts =
   `window.MASCOT_DATA='data:image/png;base64,${mascot}';\n` +
   modules.map((file) => read(`src/${file}`)).join("\n");

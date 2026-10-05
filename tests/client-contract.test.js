@@ -60,7 +60,7 @@ async function senderFixture() {
       } };
     },
   });
-  for (const name of ["model", "runaway", "journey", "api-client", "account", "app"]) vm.runInContext(source(name), context);
+  for (const name of ["model", "runaway", "journey", "api-client", "account", "card-export", "app"]) vm.runInContext(source(name), context);
   await new Promise(setImmediate);
   await new Promise(setImmediate);
   vm.runInContext(`

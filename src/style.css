@@ -124,6 +124,8 @@ button svg {
 .brand {
   display: flex;
   align-items: center;
+  flex-shrink: 0;
+  white-space: nowrap;
   gap: 10px;
   font-size: 24px;
   font-weight: 800;
@@ -132,6 +134,7 @@ button svg {
 .brand-mark {
   width: 35px;
   height: 35px;
+  flex-shrink: 0;
   display: grid;
   place-items: center;
   background: var(--pink);
@@ -147,6 +150,7 @@ button svg {
 }
 .nav button {
   font-size: 14px;
+  white-space: nowrap;
   min-height: 44px;
   padding: 8px 18px;
   border-radius: 24px;
@@ -1818,7 +1822,8 @@ body[data-audience="guest"] .brand { cursor: default; }
   .account-wrap { margin: 18px 22px 38px; }
   .account-card { padding: 29px 23px; }
   .account-card h1 { font-size: 27px; }
-  .site-header .nav { gap: 12px; }
+  .site-header { flex-wrap: wrap; }
+  .site-header .nav { gap: 12px; margin-left: auto; flex-wrap: wrap; justify-content: flex-end; }
   .site-header .nav button { font-size: 12px; }
   .account-nav { font-size: 11px !important; }
   .list-head { gap: 18px; align-items: flex-start; }
@@ -1881,3 +1886,31 @@ body[data-audience="guest"] .brand { cursor: default; }
 .host-activity-choice.selected .radio { background: #fff; border: 5px solid #618163; }
 .modal-activity-choices label { display: flex; align-items: center; gap: 10px; margin-top: 13px; font-size: 13px; }
 .modal-activity-choices input[type="radio"] { width: 18px; height: 18px; min-height: 18px; flex-shrink: 0; margin: 0; accent-color: #618163; }
+
+.invitation-modes { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+.mode-choice { text-align:left; padding:16px 13px; border:1.5px solid #bea9b0; background:#fffdfa; border-radius:10px; }
+.mode-choice b { display:block; margin-bottom:7px; }
+.mode-choice small { display:block; color:#8e7980; font-size:11px; line-height:1.65; }
+.mode-choice.selected { background:#fce2ed; border-color:var(--ink); box-shadow:3px 3px var(--ink); }
+.candidate-list { display:grid; gap:14px; text-align:left; }
+.candidate-row { min-width:0; padding:13px; border:1px solid #dfcdd3; border-radius:10px; background:#fffdfb; }
+.candidate-row .columns { margin:0; min-width:0; }
+.candidate-row input { min-width:0; }
+.candidate-remove { font-size:11px; padding:6px 0 0; display:block; margin-left:auto; }
+.candidate-add { font-size:12px; margin:6px 0 16px; }
+.form-section h3 { font-size:15px; margin:22px 0 12px; }
+.recipient-create { max-width:440px; margin:30px auto 5px; text-align:center; padding:0 16px; }
+.recipient-create p { color:#8e7980; font-size:12px; margin-bottom:13px; }
+.recipient-create .btn { display:inline-flex; text-decoration:none; }
+.card-save-image { display:block;width:100%;height:auto;border-radius:9px;margin:16px 0 20px;-webkit-touch-callout:default;-webkit-user-select:auto;user-select:auto;touch-action:auto; }
+.card-open-image { margin-top:10px;text-decoration:none; }
+.card-download-image { display:flex;justify-content:center;gap:6px;margin:14px auto 0; }
+.card-save-tip { line-height:1.7; }
+.card-save-modal #card-share-status:empty { display:none; }
+@media(max-width:640px) {
+  .candidate-row { padding:11px; }
+  .candidate-row .columns { grid-template-columns:minmax(0,1.15fr) minmax(0,1fr); gap:8px; }
+  .candidate-row input { font-size:16px; padding:10px 7px; }
+  .mode-choice { padding:13px 11px; }
+  .mode-choice b { font-size:13px; }
+}

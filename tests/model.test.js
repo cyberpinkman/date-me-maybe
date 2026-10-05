@@ -427,3 +427,157 @@ test("detail-set membership is guest consent: host edits fail and guest edits re
   }
   failsWith(() => M.normalizeProposal({ ...final.proposal, preferences: { ...final.proposal.preferences, detail: "日料" } }), "INVALID_INPUT");
 });
+
+const fullPlan = () => ({
+  timeOptions: [{ date: "2099-10-10", time: "18:30" }, { date: "2099-10-11", time: "15:00" }],
+  placeOptions: ["美术馆门口", "公园南门"],
+  activities: ["吃点好吃的", "喝杯咖啡"],
+  preferences: { hints: ["轻松随意就好"], details: { "吃点好吃的": ["日料", "西餐"], "喝杯咖啡": ["安静的小店"] } },
+});
+const fullSelection = () => ({ date: "2099-10-10", time: "18:30", place: "美术馆门口", activity: "吃点好吃的", detail: "西餐" });
+const offered = (mode, plan = fullPlan()) => mode === "host"
+  ? M.create({ mode, from: "A", to: "B", plan })
+  : change(M.create({ mode }), "guest", "respond", plan);
+
+test("full scopes work in both directions and only singleton offers support direct acceptance", () => {
+  const plan = fullPlan();
+  plan.timeOptions = [plan.timeOptions[0]];
+  plan.placeOptions = [plan.placeOptions[0]];
+  plan.activities = ["吃点好吃的"];
+  for (const details of [["西餐"], []]) {
+    plan.preferences.details = { "吃点好吃的": details };
+    for (const mode of ["host", "open"]) {
+      const x = offered(mode, plan), owner = mode === "host" ? "host" : "guest", chooser = owner === "host" ? "guest" : "host";
+      assert.equal(M.scopeOwner(x), owner);
+      assert.equal(M.isFullRange(x.proposal), true);
+      assert.equal(M.complete(x.proposal), true);
+      assert.equal(x.proposal.preferences.detail, details[0] || "");
+      assert.equal(M.status(x), mode === "host" ? "waiting" : "host_review");
+      assert.equal(x.approvals[owner], x.version);
+      assert.equal(x.approvals[chooser], null);
+      assert.equal(x.responded, mode !== "host");
+      assert.equal(M.status(change(x, owner, "confirm")), M.status(x));
+      const accepted = change(x, chooser, "confirm");
+      assert.equal(M.status(accepted), "confirmed");
+      assert.equal(accepted.version, x.version);
+      assert.equal(accepted.responded, true);
+      assert.deepEqual(change(accepted, chooser, "confirm"), accepted);
+    }
+  }
+  for (const mode of ["host", "open"]) {
+    const x = offered(mode);
+    assert.equal(M.complete(x.proposal), false);
+    for (const role of ["host", "guest"])
+      failsWith(() => change(x, role, "confirm"), "ACTIVITY_SELECTION_REQUIRED");
+  }
+});
+
+test("full-scope finalization checks every dimension and inherits only the current author's consent", () => {
+  for (const mode of ["host", "open"]) {
+    const x = offered(mode), owner = M.scopeOwner(x), chooser = owner === "host" ? "guest" : "host";
+    const before = JSON.parse(JSON.stringify(x));
+    const final = change(x, chooser, "finalize", fullSelection());
+    assert.equal(M.status(final), "confirmed");
+    assert.equal(final.version, x.version + 1);
+    assert.equal(final.proposal.preferences.detail, "西餐");
+    assert.deepEqual(final.proposal.preferences.details, x.proposal.preferences.details);
+    assert.deepEqual(final.proposal.timeOptions, x.proposal.timeOptions);
+    assert.deepEqual(final.proposal.placeOptions, x.proposal.placeOptions);
+    assert.deepEqual(final.approvals, { host: final.version, guest: final.version });
+    assert.deepEqual(x, before);
+    assert.deepEqual(final.history.at(-1).proposal, x.proposal);
+    failsWith(() => change(x, owner, "finalize", fullSelection()), "INVALID_ROLE");
+    failsWith(() => change(final, chooser, "finalize", fullSelection()), "FINALIZATION_NOT_ALLOWED");
+    failsWith(() => change({ ...x, approvals: { host: null, guest: null } }, chooser, "finalize", fullSelection()), "FINALIZATION_NOT_ALLOWED");
+    failsWith(() => M.transition(final, { role: chooser, type: "finalize", version: x.version, proposal: fullSelection() }), "STALE_VERSION");
+    for (const patch of [
+      { date: "2099-10-11" }, // A date and time from different slots are not an accepted pair.
+      { time: "19:00" }, { place: "其他地点" }, { activity: "散个步" }, { detail: "火锅" },
+    ]) failsWith(() => change(x, chooser, "finalize", { ...fullSelection(), ...patch }), "INVALID_ACTIVITY_SELECTION");
+    for (const key of ["date", "time", "place", "activity", "detail"]) {
+      const selection = fullSelection(); delete selection[key];
+      failsWith(() => change(x, chooser, "finalize", selection), "ACTIVITY_SELECTION_REQUIRED");
+    }
+    for (const key of ["preferences", "timeOptions", "placeOptions", "activities", "scopeOwner"])
+      failsWith(() => change(x, chooser, "finalize", { ...fullSelection(), [key]: [] }), "INVALID_INPUT");
+    const coffee = change(x, chooser, "finalize", { ...fullSelection(), activity: "喝杯咖啡", detail: "安静的小店" });
+    assert.equal(coffee.proposal.preferences.detail, "安静的小店");
+  }
+});
+
+test("a new offer resets choices without granting authors the other person's decision", () => {
+  for (const mode of ["host", "open"]) {
+    const x = offered(mode), owner = M.scopeOwner(x), chooser = owner === "host" ? "guest" : "host";
+    failsWith(() => change(x, chooser, "propose", { date: "2099-10-12", time: "19:00", place: "新地点" }), "FINALIZATION_NOT_ALLOWED");
+    for (const patch of [
+      { timeOptions: [{ date: "2099-10-12", time: "19:00" }] },
+      { placeOptions: ["新地点"] },
+      { activities: ["吃点好吃的"] },
+      { preferences: { details: { "吃点好吃的": ["火锅"] } } },
+    ]) {
+      failsWith(() => change(x, chooser, "propose", patch), "INVALID_ACTIVITY_SELECTION");
+      const next = change(x, owner, "propose", patch);
+      assert.equal(next.approvals[chooser], null);
+      assert.equal(next.approvals[owner], next.version);
+      assert.equal(M.status(next), mode === "host" ? "waiting" : "host_review");
+      assert.equal(next.responded, mode !== "host");
+    }
+    const final = change(x, chooser, "finalize", fullSelection());
+    const reopened = change(final, owner, "propose", { preferences: { details: { "吃点好吃的": ["日料", "火锅"] } } });
+    assert.equal(reopened.proposal.activity, "");
+    assert.equal(reopened.proposal.preferences.detail, "");
+    assert.equal(reopened.approvals[chooser], null);
+    failsWith(() => change(reopened, chooser, "confirm"), "ACTIVITY_SELECTION_REQUIRED");
+    assert.equal(M.status(change(reopened, chooser, "finalize", { ...fullSelection(), detail: "火锅" })), "confirmed");
+  }
+  failsWith(() => change(offered("host"), "guest", "respond", fullPlan()), "INVALID_ROLE");
+  for (const patch of [{ date: "2099-10-10" }, { activity: "吃点好吃的" }, { scopeOwner: "guest" }])
+    failsWith(() => M.create({ mode: "host", plan: { ...fullPlan(), ...patch } }), "INVALID_INPUT");
+});
+
+test("rescheduling a selected full plan keeps its activity and detail but needs the other person again", () => {
+  for (const mode of ["host", "open"]) {
+    const x = offered(mode), chooser = M.scopeOwner(x) === "host" ? "guest" : "host";
+    const final = change(x, chooser, "finalize", fullSelection());
+    for (const role of ["host", "guest"]) {
+      const other = role === "host" ? "guest" : "host";
+      const next = change(final, role, "propose", { date: "2099-10-12", time: "19:00", place: "新的见面地点" });
+      assert.deepEqual(next.proposal.timeOptions, [{ date: "2099-10-12", time: "19:00" }]);
+      assert.deepEqual(next.proposal.placeOptions, ["新的见面地点"]);
+      assert.deepEqual(next.proposal.preferences, final.proposal.preferences);
+      assert.equal(next.proposal.activity, final.proposal.activity);
+      assert.equal(next.approvals[other], null);
+      assert.equal(next.approvals[role], next.version);
+      assert.equal(M.status(next), other === "host" ? "host_review" : "guest_review");
+      failsWith(() => M.transition(next, { type: "confirm", role: other, version: final.version }), "STALE_VERSION");
+      assert.equal(M.status(change(next, other, "confirm")), "confirmed");
+      failsWith(() => change(final, role, "propose", { date: "2099-10-12", activity: "喝杯咖啡" }), "INVALID_ACTIVITY_SELECTION");
+      failsWith(() => change(final, role, "propose", { preferences: { detail: "日料" } }), "INVALID_ACTIVITY_SELECTION");
+    }
+  }
+});
+
+test("full ranges normalize bounded sets, infer only singleton choices, and leave old range semantics intact", () => {
+  const singleton = fullPlan();
+  singleton.timeOptions = [singleton.timeOptions[0]];
+  singleton.placeOptions = [singleton.placeOptions[0]];
+  singleton.activities = ["喝杯咖啡"];
+  singleton.preferences.details = { "喝杯咖啡": ["安静的小店"] };
+  const full = offered("host", singleton);
+  const accepted = change(full, "guest", "finalize", {});
+  assert.equal(M.status(accepted), "confirmed");
+  assert.deepEqual(M.normalizeProposal(accepted.proposal), accepted.proposal);
+  for (const patch of [
+    { timeOptions: [] }, { timeOptions: Array(4).fill(singleton.timeOptions[0]) },
+    { timeOptions: [{ date: "2099-10-10" }] }, { placeOptions: [] }, { placeOptions: [" "] },
+    { placeOptions: ["a", "b", "c", "d"] }, { activities: [] },
+  ]) failsWith(() => offered("host", { ...fullPlan(), ...patch }), "INVALID_INPUT");
+  const withoutPlaces = fullPlan(); delete withoutPlaces.placeOptions;
+  failsWith(() => offered("host", withoutPlaces), "INVALID_INPUT");
+  const legacy = openResponse();
+  const oldFinal = change(legacy, "host", "finalize", { activity: "吃点好吃的" });
+  assert.equal(M.isFullRange(oldFinal.proposal), false);
+  assert.equal(oldFinal.proposal.preferences.detail, "西餐");
+  failsWith(() => change(legacy, "guest", "finalize", { activity: "吃点好吃的" }), "INVALID_ROLE");
+  failsWith(() => change(legacy, "host", "finalize", { activity: "吃点好吃的", detail: "西餐" }), "INVALID_INPUT");
+});

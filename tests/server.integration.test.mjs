@@ -526,6 +526,102 @@ test('PostgreSQL + HTTP: authentication, invitation ownership, guest capabilitie
     assert.deepEqual(agreed.approvals, { host: agreed.version, guest: agreed.version });
   });
 
+  await t.test('full scopes delegate final time, place, activity and detail to the opposite role in either mode', async () => {
+    const plan = {
+      timeOptions: [{ date: futureDate(10), time: '18:30' }, { date: futureDate(11), time: '20:00' }],
+      placeOptions: ['公园南门', '咖啡店门口'], activities: ['吃点好吃的', '喝杯咖啡'],
+      preferences: { hints: ['轻松随意就好'], details: { '吃点好吃的': ['日料', '火锅'], '喝杯咖啡': ['安静的小店', '有阳光的窗边'] } },
+    };
+    for (const mode of ['host', 'open']) {
+      const draft = { from: 'A', to: 'B', tone: 'playful', message: '一起敲定每一个小安排。', mode, timeZone: 'Asia/Shanghai', ...(mode === 'host' ? { plan } : {}) };
+      const created = succeeds(await a.post('/api/invitations', { draft, requestId: randomUUID() }), `create ${mode} scope invitation`).invitation;
+      const token = new URL(created.shareUrl).pathname.split('/').at(-1);
+      const hostActions = `${ownerPath(created.id)}/actions`, guestActions = `${guestPath(token)}/actions`;
+      const owner = mode === 'host' ? { client: a, path: hostActions, role: 'host' } : { client: b, path: guestActions, role: 'guest' };
+      const chooser = mode === 'host' ? { client: b, path: guestActions, role: 'guest' } : { client: a, path: hostActions, role: 'host' };
+      let offered = created;
+      if (mode === 'open') offered = succeeds(await b.post(guestActions, { type: 'respond', version: created.version, requestId: randomUUID(), proposal: plan }), 'guest offers a full scope').invitation;
+      else fails(await b.post(guestActions, { type: 'respond', version: created.version, requestId: randomUUID(), proposal: plan }), 422, 'host-mode guest cannot replace the host scope');
+      assert.deepEqual(offered.proposal.timeOptions, plan.timeOptions);
+      assert.equal(offered.proposal.date, '');
+      assert.equal(offered.proposal.place, '');
+      assert.equal(offered.proposal.activity, '');
+      assert.deepEqual(offered.approvals, { host: owner.role === 'host' ? offered.version : null, guest: owner.role === 'guest' ? offered.version : null });
+      const selected = { ...plan.timeOptions[1], place: '公园南门', activity: '吃点好吃的', detail: '火锅' };
+      const finalize = patch => ({ type: 'finalize', version: offered.version, requestId: randomUUID(), proposal: { ...selected, ...patch } });
+      const before = await getOwner(a, created.id);
+      for (const patch of [
+        { date: plan.timeOptions[0].date }, // Date and time must belong to the same offered pair.
+        { place: '没提供过的地方' }, { activity: '散个步' },
+        { detail: '安静的小店' }, { detail: '日料、火锅' }, { detail: '' },
+        { scopeOwner: chooser.role }, { preferences: { details: { '吃点好吃的': ['火锅'] } } },
+      ]) fails(await chooser.client.post(chooser.path, finalize(patch)), 422, `${mode}: choice must stay inside every scope dimension`);
+      fails(await chooser.client.post(chooser.path, { type: 'finalize', version: offered.version, requestId: randomUUID(), proposal: { activity: '吃点好吃的' } }), 422, 'Ambiguous omitted choices cannot be auto-filled');
+      fails(await owner.client.post(owner.path, finalize({})), 422, 'The scope author cannot act as the opposite chooser');
+      fails(await c.post(hostActions, finalize({})), 404, 'An unrelated account cannot choose');
+      fails(await chooser.client.post(chooser.path, { type: 'confirm', version: offered.version, requestId: randomUUID() }), 422, 'Confirm cannot skip unresolved dimensions');
+      fails(await chooser.client.post(chooser.path, { type: 'propose', version: offered.version, requestId: randomUUID(), proposal: { place: '没提供过的地方' } }), 409, 'Pending chooser cannot bypass the offered scope through rescheduling');
+      assert.deepEqual(await getOwner(a, created.id), before, 'Rejected selections neither advance the version nor change consent');
+
+      const action = finalize({});
+      const finalResponse = await chooser.client.post(chooser.path, action);
+      const final = succeeds(finalResponse, `${mode}: opposite role selects the final arrangement`).invitation;
+      assert.deepEqual(final.proposal.timeOptions, offered.proposal.timeOptions);
+      assert.deepEqual(final.proposal.placeOptions, offered.proposal.placeOptions);
+      assert.deepEqual(final.proposal.preferences.details, offered.proposal.preferences.details);
+      assert.equal(final.proposal.preferences.detail, '火锅', 'A new full scope chooses one concrete preference, not the old joined alias');
+      assert.deepEqual([final.proposal.date, final.proposal.time, final.proposal.place, final.proposal.activity], [selected.date, selected.time, selected.place, selected.activity]);
+      assert.deepEqual(final.approvals, { host: final.version, guest: final.version });
+      const guestView = succeeds(await b.get(guestPath(token)), 'read selected scope anonymously').invitation;
+      assertPublicInvitation(guestView, [userA.id, userA.email]);
+      assert.deepEqual(guestView.proposal, (await getOwner(a, created.id)).proposal);
+      assert.deepEqual(await chooser.client.post(chooser.path, action), finalResponse, 'Finalization replay returns its original complete snapshot');
+
+      const rescheduled = succeeds(await a.post(hostActions, {
+        type: 'propose', version: final.version, requestId: randomUUID(), proposal: { date: futureDate(12), time: '19:15', place: '新集合点' },
+      }), 'An agreed plan may be rescheduled for fresh consent').invitation;
+      assert.deepEqual(rescheduled.proposal.timeOptions, [{ date: futureDate(12), time: '19:15' }]);
+      assert.deepEqual(rescheduled.proposal.placeOptions, ['新集合点']);
+      assert.equal(rescheduled.proposal.preferences.detail, '火锅');
+      assert.deepEqual(rescheduled.approvals, { host: rescheduled.version, guest: null });
+      assert.deepEqual(await chooser.client.post(chooser.path, action), finalResponse, 'An earlier choice replay cannot roll back a later proposed schedule');
+      const reconfirmed = succeeds(await b.post(guestActions, { type: 'confirm', version: rescheduled.version, requestId: randomUUID() }), 'The other person confirms the revised time and place').invitation;
+      assert.deepEqual(reconfirmed.approvals, { host: reconfirmed.version, guest: reconfirmed.version });
+    }
+  });
+
+  await t.test('unique full scopes allow opposite confirmation and retained expired alternatives do not block a future choice', async () => {
+    const unique = {
+      timeOptions: [{ date: futureDate(13), time: '18:30' }], placeOptions: ['公园南门'], activities: ['散个步'],
+      preferences: { hints: [], details: { '散个步': [] } },
+    };
+    for (const mode of ['host', 'open']) {
+      const created = succeeds(await a.post('/api/invitations', { draft: { from: 'A', to: 'B', tone: 'playful', message: '这次就这样见吧。', mode, ...(mode === 'host' ? { plan: unique } : {}) }, requestId: randomUUID() }), 'create unique scope').invitation;
+      const token = new URL(created.shareUrl).pathname.split('/').at(-1);
+      const guestActions = `${guestPath(token)}/actions`, hostActions = `${ownerPath(created.id)}/actions`;
+      const offered = mode === 'host' ? created : succeeds(await b.post(guestActions, { type: 'respond', version: created.version, requestId: randomUUID(), proposal: unique }), 'guest offers unique choices').invitation;
+      assert.equal(offered.proposal.date, unique.timeOptions[0].date);
+      assert.equal(offered.proposal.activity, '散个步');
+      assert.equal(offered.proposal.preferences.detail, '');
+      const chooser = mode === 'host' ? b : a, path = mode === 'host' ? guestActions : hostActions;
+      const confirmed = succeeds(await chooser.post(path, { type: 'confirm', version: offered.version, requestId: randomUUID() }), 'The other person may confirm all unique choices').invitation;
+      assert.deepEqual(confirmed.approvals, { host: confirmed.version, guest: confirmed.version });
+    }
+
+    const plan = { ...unique, timeOptions: [{ date: futureDate(13), time: '18:30' }, { date: futureDate(14), time: '20:00' }] };
+    const created = succeeds(await a.post('/api/invitations', { draft: { from: 'A', to: 'B', tone: 'playful', message: '挑个仍方便的时间吧。', mode: 'host', plan }, requestId: randomUUID() }), 'create expiring candidate fixture').invitation;
+    const token = new URL(created.shareUrl).pathname.split('/').at(-1);
+    // Simulate time passing for one stored alternative, without changing the
+    // public contract or any unrelated row in the isolated test database.
+    const state = (await pool.query('SELECT state FROM invitations WHERE id=$1', [created.id])).rows[0].state;
+    state.proposal.timeOptions[0].date = '2000-01-01';
+    await pool.query('UPDATE invitations SET state=$1 WHERE id=$2', [state, created.id]);
+    const final = succeeds(await b.post(`${guestPath(token)}/actions`, { type: 'finalize', version: created.version, requestId: randomUUID(), proposal: { ...plan.timeOptions[1] } }), 'Select a future slot while retaining an expired unchosen alternative').invitation;
+    assert.equal(final.proposal.date, plan.timeOptions[1].date);
+    assert.equal(final.proposal.timeOptions[0].date, '2000-01-01', 'The originally offered range remains intact');
+    assert.deepEqual(final.approvals, { host: final.version, guest: final.version });
+  });
+
   await t.test('sign-out invalidates both the browser cookie and the server session while C remains signed in', async () => {
     const oldCookie = a.cookie();
     succeeds(await a.post('/api/auth/sign-out', {}), 'A signs out');

@@ -21,8 +21,17 @@ function restoreCreationDraft() {
       for (const key of ["from", "to", "tone", "message"]) {
         if (typeof saved.draft[key] === "string") restored[key] = saved.draft[key];
       }
+      restored.mode = saved.draft.mode === "host" ? "host" : "open";
+      const plan = saved.draft.plan;
+      if (plan && typeof plan === "object") {
+        if(Array.isArray(plan.timeOptions) && plan.timeOptions.length) restored.plan.timeOptions=plan.timeOptions.slice(0,3).map(slot=>({date:typeof slot?.date==="string"?slot.date:"",time:typeof slot?.time==="string"?slot.time:""}));
+        if(Array.isArray(plan.placeOptions) && plan.placeOptions.length) restored.plan.placeOptions=plan.placeOptions.slice(0,3).map(place=>typeof place==="string"?place:"");
+        if(Array.isArray(plan.activities)) restored.plan.activities=[...new Set(plan.activities.filter(activity=>activities.some(item=>item[0]===activity)))];
+        restored.plan.preferences.hints=Array.isArray(plan.preferences?.hints)?plan.preferences.hints.filter(hint=>sceneHints.includes(hint)):[];
+        for(const activity of activities.map(item=>item[0])) restored.plan.preferences.details[activity]=detailChoices(plan.preferences?.details?.[activity]).filter(detail=>sceneDetails[activity].items.some(item=>item[1]===detail));
+      }
       draft = restored;
-      step = Math.max(0, Math.min(1, Number(saved.step) || 0));
+      step = Math.max(0, Math.min(creationSteps().length-1, Number(saved.step) || 0));
       accountIntent = saved.intent === "list" ? "list" : "create";
       return true;
     }
@@ -32,6 +41,7 @@ function restoreCreationDraft() {
 // An account transition invalidates every identity-scoped view together.
 // The creation draft belongs to this editing session and deliberately survives.
 function resetSenderIdentity() {
+  disposeCardExport(modal);
   sessionUser = null;
   invitations = [];
   currentId = null;

@@ -11,6 +11,16 @@ const proposal = (patch = {}) => ({
   ...patch,
 });
 const invalid = error => error.status === 422 && typeof error.code === 'string';
+const plan = (patch = {}) => ({
+  timeOptions: [{ date, time: '18:30' }, { date, time: '20:00' }],
+  placeOptions: ['咖啡店门口', '公园南门'], activities: ['喝杯咖啡', '吃点好吃的'],
+  preferences: { hints: [], details: { '喝杯咖啡': ['安静的小店', '有阳光的窗边'], '吃点好吃的': ['日料', '火锅'] } },
+  ...patch,
+});
+const scopedProposal = (patch = {}) => ({
+  ...plan(), date: '', time: '', place: '', activity: '',
+  preferences: { ...plan().preferences, detail: '' }, ...patch,
+});
 
 test('open invitations leave the arrangement empty while legacy drafts remain valid', async () => {
   const { validateDraft } = await validation;
@@ -70,7 +80,7 @@ test('detail sets validate raw members before normalization and keep the selecte
   assert.throws(() => validateProposal({ date, time: '18:30', place: '', activity: '喝杯咖啡', preferences: { hints: [], detail: ['安静的小店'] } }, 'Asia/Shanghai'), invalid, 'Legacy proposals retain their scalar shape');
 });
 
-test('event input admits activity ranges and limits finalize to a host selection', async () => {
+test('event input permits final choices for either role while excluding client-controlled authorization', async () => {
   const { validateEvent } = await validation;
   const event = { type: 'respond', version: 1, requestId: randomUUID(), proposal: proposal() };
   assert.equal(validateEvent(event, 'guest'), event);
@@ -81,8 +91,61 @@ test('event input admits activity ranges and limits finalize to a host selection
   ]) assert.throws(() => validateEvent({ ...event, ...patch }, 'guest'), invalid);
   const finalize = { type: 'finalize', version: 2, requestId: randomUUID(), proposal: { activity: '喝杯咖啡' } };
   assert.equal(validateEvent(finalize, 'host'), finalize);
-  assert.throws(() => validateEvent(finalize, 'guest'), invalid);
-  for (const patch of [{ activity: '' }, { activity: '喝杯咖啡', place: '偷偷换地点' }, { activity: '喝杯咖啡', activities: ['喝杯咖啡'] }]) {
+  assert.equal(validateEvent(finalize, 'guest'), finalize, 'The locked model transition owns role authorization for the actual invitation mode');
+  for (const patch of [{ activity: [] }, { activity: '喝杯咖啡', scopeOwner: 'guest' }, { activity: '喝杯咖啡', activities: ['喝杯咖啡'] }]) {
     assert.throws(() => validateEvent({ ...finalize, proposal: patch }, 'host'), invalid);
   }
+  const flatSelection = { ...finalize, proposal: { date, time: '18:30', place: '公园南门', activity: '吃点好吃的', detail: '日料' } };
+  assert.equal(validateEvent(flatSelection, 'guest'), flatSelection);
+  assert.doesNotThrow(() => validateEvent({ ...finalize, proposal: {} }, 'guest'), 'Only the model may fill unambiguous omitted choices');
+  assert.throws(() => validateEvent({ ...flatSelection, scopeOwner: 'host' }, 'guest'), invalid);
+  assert.throws(() => validateEvent({ ...flatSelection, proposal: { ...flatSelection.proposal, detail: ['日料'] } }, 'guest'), invalid);
+});
+
+test('host drafts accept a complete bounded scope while other modes cannot smuggle a plan', async () => {
+  const { validateDraft } = await validation;
+  const input = { ...openDraft, mode: 'host', plan: plan() };
+  const actual = validateDraft(input);
+  assert.equal(actual.mode, 'host');
+  assert.deepEqual(actual.plan, plan());
+  assert.throws(() => validateDraft({ ...openDraft, plan: plan() }), invalid);
+  for (const patch of [
+    { timeOptions: [] }, { timeOptions: Array(4).fill({ date, time: '18:30' }) },
+    { timeOptions: [{ date: '2000-01-01', time: '18:30' }] },
+    { timeOptions: [{ date: '2099-02-30', time: '18:30' }] },
+    { timeOptions: [{ date, time: '18:30', scopeOwner: 'host' }] },
+    { placeOptions: [] }, { placeOptions: ['  '] }, { placeOptions: ['地'.repeat(61)] },
+    { placeOptions: ['A', 'B', 'C', 'D'] }, { activities: [] },
+    { preferences: { hints: [], details: { '散个步': ['公园慢慢走'] } } },
+    { activity: '喝杯咖啡' }, { date }, { scopeOwner: 'host' },
+  ]) assert.throws(() => validateDraft({ ...input, plan: plan(patch) }), invalid);
+});
+
+test('full scopes preserve candidate pairs and validate a single final detail inside the chosen activity', async () => {
+  const { validateEvent, validateProposal } = await validation;
+  assert.doesNotThrow(() => validateEvent({ type: 'respond', version: 1, requestId: randomUUID(), proposal: plan() }, 'guest'));
+  assert.doesNotThrow(() => validateProposal(scopedProposal(), 'Asia/Shanghai'));
+  const selected = scopedProposal({ date, time: '20:00', place: '公园南门', activity: '吃点好吃的', preferences: { ...plan().preferences, detail: '日料' } });
+  assert.doesNotThrow(() => validateProposal(selected, 'Asia/Shanghai'));
+  for (const patch of [
+    { date, time: '' }, { date, time: '19:00' }, { place: '没提供过的地方' },
+    { activity: '散个步' }, { timeOptions: [] }, { placeOptions: [] },
+    { preferences: { ...plan().preferences, detail: '日料、火锅' } },
+    { preferences: { ...plan().preferences, detail: '安静的小店' } },
+    { activity: '', preferences: { ...plan().preferences, detail: '日料' } },
+  ]) assert.throws(() => validateProposal({ ...selected, ...patch }, 'Asia/Shanghai'), invalid);
+  assert.throws(() => validateProposal(scopedProposal(), 'Asia/Shanghai', plan({ placeOptions: ['公园南门', ' '] })), invalid, 'Raw scope entries cannot be discarded during normalization');
+  assert.doesNotThrow(() => validateEvent({ type: 'propose', version: 2, requestId: randomUUID(), proposal: { placeOptions: ['新地点'] } }, 'host'), 'A scope owner may patch one candidate dimension, with authority checked in the model');
+});
+
+test('new time ranges must be future but a retained expired alternative does not invalidate another selected slot', async () => {
+  const { validateProposal } = await validation;
+  const retained = scopedProposal({
+    timeOptions: [{ date: '2000-01-01', time: '18:30' }, { date, time: '20:00' }],
+    date, time: '20:00', place: '公园南门', activity: '吃点好吃的', preferences: { ...plan().preferences, detail: '日料' },
+  });
+  assert.doesNotThrow(() => validateProposal(retained, 'Asia/Shanghai', { date, time: '20:00', place: '公园南门', activity: '吃点好吃的', detail: '日料' }));
+  assert.doesNotThrow(() => validateProposal(retained, 'Asia/Shanghai', {}), 'Confirm validates the selected schedule, not every historical alternative');
+  assert.throws(() => validateProposal(retained, 'Asia/Shanghai', { timeOptions: retained.timeOptions }), invalid, 'A newly submitted candidate array cannot contain past slots');
+  assert.throws(() => validateProposal({ ...retained, date: '2000-01-01', time: '18:30' }, 'Asia/Shanghai', {}), invalid, 'The chosen slot itself must still be future');
 });
