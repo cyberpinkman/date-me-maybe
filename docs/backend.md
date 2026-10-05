@@ -6,7 +6,7 @@ Express 提供同源页面与 API，Better Auth 1.7.7 管理发起人登录，Po
 
 v0.5.0 已验证真实 Resend 邮件登录、日程保存、匿名回应、最终确认、跨邀约排除冲突和取消释放。[当前发布进度见 README](../README.md#发布状态)。Google 尚未配置。
 
-本轮新增的运营后台实现与当前 v0.5.0 发布状态分别记录。后台使用独立 origin、服务端邮箱许可名单、验证码和会话存储；业务数据只读。启用配置、`004_admin_auth.sql` 迁移和域名路由见[运营后台说明](operations-admin.md)，指标口径见[运营数据契约](admin-data-contract.md)。生产上线须另行验收。
+v0.6.0 运营后台已上线，使用独立 origin、服务端邮箱许可名单、验证码和会话存储；业务数据只读。`004_admin_auth.sql` 已完成生产迁移。启用配置、域名路由及本轮生产验证范围见[运营后台说明](operations-admin.md)，指标口径见[运营数据契约](admin-data-contract.md)。
 
 ## 本地数据库和配置
 

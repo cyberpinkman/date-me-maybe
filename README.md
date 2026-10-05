@@ -65,30 +65,31 @@ npm start
 
 ## 运营管理后台
 
-本轮已准备独立的运营后台，计划使用 `admin.opendater.com`，通过服务端邮箱许可名单和独立验证码登录查看概览、注册与邀约趋势、用户详情及邀约列表。业务数据接口只读，前台登录不会自动获得后台权限。**v0.6.0 已在本地准备，尚待生产部署与验收。** 配置、认证隔离及域名路由见[运营后台说明](docs/operations-admin.md)，统计定义见[运营数据契约](docs/admin-data-contract.md)。
+运营后台已发布至 [admin.opendater.com](https://admin.opendater.com)，通过服务端邮箱许可名单和独立验证码登录查看概览、注册与邀约趋势、用户详情及邀约列表。业务数据接口只读，前台登录不会自动获得后台权限。配置、认证隔离及域名路由见[运营后台说明](docs/operations-admin.md)，统计定义见[运营数据契约](docs/admin-data-contract.md)。
 
 ## 发布状态
 
-**v0.6.0 运营后台正在准备发布。** 本地 81 项单元/边界测试、48 项真实 PostgreSQL 集成测试通过，后台验证码登录及数据页已完成本地浏览器验收。生产结果尚未确认；下文保留已发布 v0.5.0 的记录。
+**v0.6.0 已于 2026-10-05 发布。** 运营后台完成生产数据库迁移、正式域名 DNS/TLS 与路由验证，真实邮箱验证码登录、生产概览和用户数据加载、7 天趋势切换、邮箱搜索、用户详情及取消状态筛选均已验证。未登录访问返回 401，非许可邮箱返回 403，主站访问后台接口（包括大小写变体）返回 404。前台既有会话和日程继续可用；退出撤销与跨登录渠道隔离由本地真实数据库集成测试覆盖，本轮未重复进行生产退出验证。
 
-**v0.5.0 已于 2026-10-05 发布。** 新增个人时间表、未来 30 天可选时段、默认两小时约会、私人忙碌安排和主动绑定受邀日程。候选时间不占用日程，最终确认才占用；改期确认前保留原约定，取消后释放。规则、数据库迁移与匿名身份边界见[日程管理说明](docs/scheduling.md)。
+主站首页及邀请链接文档与发布构建一致，健康检查、`www` 跳转、微信验证文件通过。后台页面与构建一致，带 `no-store` 和禁止索引响应头；本次运行时错误日志查询未返回记录，浏览器控制台未发现错误。
 
-线上已完成真实邮箱登录、时间表保存、匿名多候选回应、最终确认、跨邀约排除重叠时段和取消释放的验证。两份本轮测试邀约均已取消，临时开放时段已移除；历史约定保留，旧版存在的重叠记录会提示调整。主动绑定受邀人及并发竞争由真实 PostgreSQL 集成测试覆盖，本轮未使用第二个正式账号重复绑定验证。
+发布提交 [`58b30ca`](https://github.com/cyberpinkman/date-me-maybe/commit/58b30cad817502a20f74e8597e16abbe8cc47ce2) 的 [Node.js 22 CI](https://github.com/cyberpinkman/date-me-maybe/actions/runs/37302448847) 已通过 **81 项单元/边界测试、48 项真实 PostgreSQL 集成测试及构建**。生产部署为 `dpl_8dMT7njWXrAvrLJq6riCHNVyyuJp`。部署配置、迁移与环境隔离见[后端说明](docs/backend.md#生产部署)。
 
-正式首页与发布构建逐字节一致，数据库健康检查正常，`www` 跳转及微信验证文件保持正确，生产测试邮箱关闭；本轮部署未查询到运行时错误日志。双向邀约与图片卡片沿用 v0.4.0，合同见[双向邀约说明](docs/invitation-modes.md)。手机相册保存仍需真机核对，不能由桌面手机视口测试代替。
+上一版 [v0.5.0](https://github.com/cyberpinkman/date-me-maybe/releases/tag/v0.5.0) 同日发布个人时间表、未来 30 天可选时段、约会时长、私人忙碌安排和主动绑定受邀日程；候选时间不占用日程，最终确认才占用，改期确认前保留原约定，取消后释放。该版已完成真实登录、选时、确认、防冲突和取消释放的生产验证；历史约定保留，旧版已有重叠会提示调整。规则与匿名身份边界见[日程管理说明](docs/scheduling.md)。其发布提交 `007e789` 的 [CI](https://github.com/cyberpinkman/date-me-maybe/actions/runs/37267310466) 通过 80 项单元/边界测试、35 项真实数据库集成测试及构建。
 
-在线使用：[opendater.com](https://opendater.com)。`www.opendater.com` 以 308 跳转到主域名。
+双向邀约与图片卡片沿用 v0.4.0，合同见[双向邀约说明](docs/invitation-modes.md)。手机相册保存仍需真机核对，不能由桌面手机视口测试代替。
+
+在线使用：[opendater.com](https://opendater.com) · [运营后台](https://admin.opendater.com)。`www.opendater.com` 以 308 跳转到主域名。
 
 | 部分 | 当前发布配置 |
 | --- | --- |
 | 应用 | 独立 Vercel 项目 `opendater`，Express / Node.js 22，运行区域 `sin1` |
 | 数据库 | 独立 Neon Free 数据库 `opendater-db`，区域 `sin1`；仅连接 Production 环境 |
-| 登录 | Resend 邮箱验证码；真实投递与生产登录已验证。Google 尚未配置，因此不显示入口 |
+| 登录 | Resend 邮箱验证码；主站与后台真实登录已验证，后台使用独立会话。Google 尚未配置 |
+| 后台权限 | 服务端精确邮箱许可名单；业务数据只读，真实许可邮箱不进入公开仓库 |
 | 数据迁移 | Production 构建前从云端敏感变量读取直连地址，经 TLS 验证后迁移；其他环境只构建前端 |
 | 部署 | 使用已登录的官方 Vercel CLI；尚未接入 Vercel GitHub App，推送 GitHub 不会自动上线 |
 | 回应更新 | 页面每 15 秒检查更新并支持刷新；没有邀约回执邮件或后台推送 |
-
-GitHub `main` 已同步 v0.5.0 实现，[v0.5.0 Release](https://github.com/cyberpinkman/date-me-maybe/releases/tag/v0.5.0) 对应生产部署。发布提交 `007e789` 的 [Node.js 22 CI](https://github.com/cyberpinkman/date-me-maybe/actions/runs/37267310466) 已通过 **80 项单元/边界测试、35 项真实 PostgreSQL 集成测试及构建**。部署配置、迁移与环境隔离见[后端说明](docs/backend.md#生产部署)。
 
 **旧 v0.1 静态 Release 仅为交互原型。** 当前 `dist/index.html` 与 `public/app.html` 都需要同源后端和数据库；单独发布 HTML 无法提供登录、分享和跨设备回应。
 
