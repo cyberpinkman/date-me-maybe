@@ -87,7 +87,7 @@ test('calendar migration atomically drains old writers and gates every subsequen
     const bookings = (await pool.query('SELECT * FROM calendar_reservations WHERE invitation_id=$1', [id])).rows;
     assert.equal(bookings.length, 1);
     assert.equal(new Date(bookings[0].starts_at).toISOString(), `${date}T11:00:00.000Z`);
-    assert.equal((await pool.query('SELECT count(*)::int AS n FROM app_migrations')).rows[0].n, 3);
+    assert.deepEqual((await pool.query('SELECT name FROM app_migrations ORDER BY name')).rows.map(row => row.name), ['001_invitations.sql', '002_scheduling.sql', '003_calendar_writer.sql', '004_admin_auth.sql']);
     await migrateDatabase({ pool, auth }); // Reapplying the unchanged batch is a no-op.
   });
 

@@ -6,6 +6,8 @@ Express 提供同源页面与 API，Better Auth 1.7.7 管理发起人登录，Po
 
 v0.5.0 已验证真实 Resend 邮件登录、日程保存、匿名回应、最终确认、跨邀约排除冲突和取消释放。[当前发布进度见 README](../README.md#发布状态)。Google 尚未配置。
 
+本轮新增的运营后台实现与当前 v0.5.0 发布状态分别记录。后台使用独立 origin、服务端邮箱许可名单、验证码和会话存储；业务数据只读。启用配置、`004_admin_auth.sql` 迁移和域名路由见[运营后台说明](operations-admin.md)，指标口径见[运营数据契约](admin-data-contract.md)。生产上线须另行验收。
+
 ## 本地数据库和配置
 
 使用 Node.js 22.x、npm 及独立的 PostgreSQL 实例或开发数据库。本地验收使用 22.22.3，`package.json` 与 lockfile 固定在 22.x，部署平台仅在该主版本内更新。开发库和集成测试库必须分开；不要将迁移或测试指向已有业务库。
@@ -206,7 +208,7 @@ Better Auth 1.7.7 的迁移检测器还可能对限流表的 `lastRequest` 字�
 
 根目录 `app.mjs` 按 [Vercel Express 入口约定](https://vercel.com/docs/frameworks/backend/express)默认导出 Express 应用，复用 PostgreSQL 连接池，并接入 [`attachDatabasePool`](https://vercel.com/docs/functions/functions-api-reference/vercel-functions-package#attachdatabasepool) 管理实例挂起前的空闲连接。入口不监听本地端口，也不执行迁移；本地仍使用 `server/start.mjs`。
 
-`npm run build` 生成内容一致的 `dist/index.html` 和 `public/index.html`。本地 Express 使用前者，Vercel 静态资源层提供后者；`/i/:token` 重写到邀请页面，API 由 Express 处理。构建不读取服务端密钥，产物不提交到 Git。**仅托管 HTML 无法运行后台版。**
+`npm run build` 生成内容一致的主站文档 `dist/index.html` 和 `public/app.html`，以及运营后台文档 `dist/admin.html` 和 `public/admin.html`。本地 Express 按 Host 选择首页；Vercel 先将后台域名首页重写到 `/admin.html`，再将普通首页和 `/i/:token` 重写到 `/app.html`，API 由 Express 处理。构建会移除旧 `public/index.html`，避免默认静态首页覆盖按域名路由。构建不读取服务端密钥，产物不提交到 Git。**仅托管 HTML 无法运行后台版。**
 
 当前未安装或接入 Vercel GitHub App，使用已登录的官方 Vercel CLI 发布。GitHub 推送只更新代码和运行 CI，不会触发站点部署。
 

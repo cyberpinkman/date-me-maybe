@@ -42,8 +42,23 @@ export function loadConfig(env = process.env) {
   }
   if (isProduction && !googleClientId && !resendApiKey) throw new Error('Production requires Google OAuth or Resend email sign-in.');
 
+  const adminOrigin = read('ADMIN_ORIGIN');
+  const adminEmails = [...new Set(read('ADMIN_EMAILS').split(',').map(email => email.trim().toLowerCase()).filter(Boolean))];
+  if (Boolean(adminOrigin) !== Boolean(adminEmails.length)) throw new Error('Set both ADMIN_ORIGIN and ADMIN_EMAILS to enable the operations console.');
+  if (adminEmails.some(email => !/^[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+$/.test(email))) throw new Error('ADMIN_EMAILS must contain valid comma-separated email addresses.');
+  if (adminOrigin) {
+    let adminURL;
+    try { adminURL = new URL(adminOrigin); } catch { throw new Error('ADMIN_ORIGIN must be an absolute HTTP(S) origin.'); }
+    if (!['http:', 'https:'].includes(adminURL.protocol) || adminURL.origin !== adminOrigin || adminURL.username || adminURL.password || adminURL.pathname !== '/' || adminURL.search || adminURL.hash || adminURL.host === appURL.host) {
+      throw new Error('ADMIN_ORIGIN must be a separate HTTP(S) origin without a path.');
+    }
+    if (isProduction && adminURL.protocol !== 'https:') throw new Error('ADMIN_ORIGIN must use HTTPS in production.');
+    if (devMailbox && !LOOPBACK_HOSTS.has(adminURL.hostname)) throw new Error('Development admin origin must use loopback.');
+    if (!resendApiKey && !devMailbox) throw new Error('The operations console requires email OTP sign-in.');
+  }
+
   const portString = read('PORT') || '3010';
   const port = Number(portString);
   if (!/^\d+$/.test(portString) || !Number.isInteger(port) || port < 1 || port > 65535) throw new Error('PORT must be an integer between 1 and 65535.');
-  return Object.freeze({ databaseUrl, origin, secret, shareSecret, googleClientId, googleClientSecret, resendApiKey, emailFrom, devMailbox, port, isProduction });
+  return Object.freeze({ databaseUrl, origin, adminOrigin, adminEmails: Object.freeze(adminEmails), secret, shareSecret, googleClientId, googleClientSecret, resendApiKey, emailFrom, devMailbox, port, isProduction });
 }

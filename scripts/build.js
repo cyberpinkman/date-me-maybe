@@ -21,10 +21,23 @@ for (const [marker, content] of [
   html = html.replace(marker, () => content);
 }
 
-// Local Express serves dist; Vercel's Express adapter serves public via its CDN.
-// Both are generated from exactly the same source and contain no server env vars.
+let adminHtml = read("src/admin/index.template.html");
+for (const [marker, content] of [
+  ["/* ADMIN_STYLES */", read("src/admin/admin.css")],
+  ["/* ADMIN_SCRIPTS */", read("src/admin/admin.js")],
+]) {
+  if (adminHtml.split(marker).length !== 2) {
+    throw new Error(`The admin template must contain exactly one ${marker}`);
+  }
+  adminHtml = adminHtml.replace(marker, () => content);
+}
+
+// Keep the CDN's default index route empty so host routing can select the app
+// or admin document. The admin document contains UI only, never account data.
 for (const directory of ["dist", "public"]) {
   fs.mkdirSync(path.join(root, directory), { recursive: true });
-  fs.writeFileSync(path.join(root, directory, "index.html"), html);
+  fs.writeFileSync(path.join(root, directory, directory === "dist" ? "index.html" : "app.html"), html);
+  fs.writeFileSync(path.join(root, directory, "admin.html"), adminHtml);
 }
-console.log(`Built dist/index.html and public/index.html (${Buffer.byteLength(html)} bytes each)`);
+fs.rmSync(path.join(root, "public", "index.html"), { force: true });
+console.log(`Built app (${Buffer.byteLength(html)} bytes) and admin (${Buffer.byteLength(adminHtml)} bytes) documents for dist and public`);

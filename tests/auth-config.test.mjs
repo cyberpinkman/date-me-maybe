@@ -56,3 +56,16 @@ test('Resend delivery requires an accepted response and does not expose provider
     await assert.rejects(failing.sendOTP({ email: 'person@example.com', otp: '123456', type: 'sign-in' }), error => !error.message.includes('123456'));
   }
 });
+
+test('operations config is opt-in, email-gated and uses a separate explicit origin', () => {
+  assert.equal(loadConfig(base).adminOrigin, '');
+  assert.deepEqual(loadConfig(base).adminEmails, []);
+  const valid = { ...production, RESEND_API_KEY: 'test-key', EMAIL_FROM: 'login@opendater.com', ADMIN_ORIGIN: 'https://admin.opendater.com', ADMIN_EMAILS: 'Admin@example.com, admin@example.com' };
+  const config = loadConfig(valid);
+  assert.deepEqual(config.adminEmails, ['admin@example.com']);
+  for (const patch of [{ ADMIN_ORIGIN: '' }, { ADMIN_EMAILS: '' }, { ADMIN_EMAILS: 'invalid' }, { ADMIN_ORIGIN: 'https://opendater.com' }, { ADMIN_ORIGIN: 'https://admin.opendater.com/path' }, { ADMIN_ORIGIN: 'http://admin.opendater.com' }, { ADMIN_ORIGIN: 'https://admin.opendater.com/' }, { RESEND_API_KEY: '' }]) {
+    assert.throws(() => loadConfig({ ...valid, ...patch }));
+  }
+  assert.equal(loadConfig({ ...base, DEV_MAILBOX: '1', ADMIN_ORIGIN: 'http://localhost:3010', ADMIN_EMAILS: 'admin@example.test' }).adminOrigin, 'http://localhost:3010');
+  assert.throws(() => loadConfig({ ...base, DEV_MAILBOX: '1', ADMIN_ORIGIN: 'http://admin.example.com', ADMIN_EMAILS: 'admin@example.test' }));
+});

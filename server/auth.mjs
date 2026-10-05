@@ -1,18 +1,21 @@
+import { createHmac } from 'node:crypto';
 import { betterAuth } from 'better-auth';
 import { emailOTP } from 'better-auth/plugins';
 
-export function createAuth({ pool, config, mailer }) {
+export function createAuth({ pool, config, mailer, audience = 'app' }) {
+  const admin = audience === 'admin';
+  const origin = admin ? config.adminOrigin : config.origin;
   const emailEnabled = Boolean(config.resendApiKey || config.devMailbox);
-  const secureCookies = config.isProduction || new URL(config.origin).protocol === 'https:';
+  const secureCookies = config.isProduction || new URL(origin).protocol === 'https:';
   return betterAuth({
-    appName: '见一面 · Date Me Maybe',
-    baseURL: config.origin,
-    basePath: '/api/auth',
-    secret: config.secret,
+    appName: admin ? '见一面 · 运营后台' : '见一面 · Date Me Maybe',
+    baseURL: origin,
+    basePath: admin ? '/api/admin/auth' : '/api/auth',
+    secret: admin ? createHmac('sha256', config.secret).update('opendater-admin-auth-v1').digest('hex') : config.secret,
     database: pool,
-    trustedOrigins: [config.origin],
+    trustedOrigins: [origin],
     emailAndPassword: { enabled: false },
-    socialProviders: config.googleClientId ? {
+    socialProviders: !admin && config.googleClientId ? {
       google: {
         clientId: config.googleClientId,
         clientSecret: config.googleClientSecret,
@@ -23,7 +26,7 @@ export function createAuth({ pool, config, mailer }) {
       },
     } : {},
     plugins: emailEnabled ? [emailOTP({
-      sendVerificationOTP: data => mailer.sendOTP(data),
+      sendVerificationOTP: data => mailer.sendOTP({ ...data, ...(admin ? { audience: 'admin' } : {}) }),
       otpLength: 6,
       expiresIn: 300,
       allowedAttempts: 5,
@@ -32,7 +35,9 @@ export function createAuth({ pool, config, mailer }) {
       sendVerificationOnSignUp: false,
       rateLimit: { window: 60, max: 3 },
     })] : [],
+    ...(admin ? { verification: { modelName: 'admin_verification' } } : {}),
     session: {
+      ...(admin ? { modelName: 'admin_session' } : {}),
       expiresIn: 60 * 60 * 24 * 7,
       updateAge: 60 * 60 * 24,
       cookieCache: { enabled: false },
@@ -43,7 +48,7 @@ export function createAuth({ pool, config, mailer }) {
       accountLinking: { enabled: false, disableImplicitLinking: true, allowDifferentEmails: false },
     },
     advanced: {
-      cookiePrefix: 'opendater',
+      cookiePrefix: admin ? 'opendater-admin' : 'opendater',
       useSecureCookies: secureCookies,
       defaultCookieAttributes: { httpOnly: true, secure: secureCookies, sameSite: 'lax', path: '/' },
       // The HTTP adapter must overwrite this header from its trusted client IP.

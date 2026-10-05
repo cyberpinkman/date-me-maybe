@@ -63,7 +63,13 @@ npm start
 
 `DEV_MAILBOX=1` 仅允许回环地址访问，因此当前本地链接适用于同一台电脑上的验收。跨设备使用需要后续配置可访问的服务地址和真实登录渠道。
 
+## 运营管理后台
+
+本轮已准备独立的运营后台，计划使用 `admin.opendater.com`，通过服务端邮箱许可名单和独立验证码登录查看概览、注册与邀约趋势、用户详情及邀约列表。业务数据接口只读，前台登录不会自动获得后台权限。**v0.6.0 已在本地准备，尚待生产部署与验收。** 配置、认证隔离及域名路由见[运营后台说明](docs/operations-admin.md)，统计定义见[运营数据契约](docs/admin-data-contract.md)。
+
 ## 发布状态
+
+**v0.6.0 运营后台正在准备发布。** 本地 81 项单元/边界测试、48 项真实 PostgreSQL 集成测试通过，后台验证码登录及数据页已完成本地浏览器验收。生产结果尚未确认；下文保留已发布 v0.5.0 的记录。
 
 **v0.5.0 已于 2026-10-05 发布。** 新增个人时间表、未来 30 天可选时段、默认两小时约会、私人忙碌安排和主动绑定受邀日程。候选时间不占用日程，最终确认才占用；改期确认前保留原约定，取消后释放。规则、数据库迁移与匿名身份边界见[日程管理说明](docs/scheduling.md)。
 
@@ -84,13 +90,13 @@ npm start
 
 GitHub `main` 已同步 v0.5.0 实现，[v0.5.0 Release](https://github.com/cyberpinkman/date-me-maybe/releases/tag/v0.5.0) 对应生产部署。发布提交 `007e789` 的 [Node.js 22 CI](https://github.com/cyberpinkman/date-me-maybe/actions/runs/37267310466) 已通过 **80 项单元/边界测试、35 项真实 PostgreSQL 集成测试及构建**。部署配置、迁移与环境隔离见[后端说明](docs/backend.md#生产部署)。
 
-**旧 v0.1 静态 Release 仅为交互原型。** 当前 `dist/index.html` 与 `public/index.html` 都需要同源后端和数据库；单独发布 HTML 无法提供登录、分享和跨设备回应。
+**旧 v0.1 静态 Release 仅为交互原型。** 当前 `dist/index.html` 与 `public/app.html` 都需要同源后端和数据库；单独发布 HTML 无法提供登录、分享和跨设备回应。
 
 ## 开发与验证
 
 ```bash
 npm test                 # 模型、交互、认证配置、客户端 IP 和 HTTP 边界测试
-npm run build            # 生成相同内容的 dist/index.html 和 public/index.html
+npm run build            # 生成主站和运营后台文档，Vercel 主站使用 public/app.html
 npm run db:migrate       # Better Auth 表及应用数据库迁移
 npm start                # 构建前端并启动 Express，默认 3010
 ```
@@ -114,6 +120,7 @@ app.mjs              Vercel Express 入口；本地仍使用 server/start.mjs
 vercel.json          Vercel 构建、邀请页面路由与安全响应头
 tests/               单元、HTTP 边界及真实数据库集成测试
 docs/backend.md      配置、接口、权限模型及生产部署
+docs/operations-admin.md 运营后台配置、权限与部署
 docs/assets/         收邀视觉和交互演示素材
 ```
 
