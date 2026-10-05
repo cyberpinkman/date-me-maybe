@@ -160,7 +160,7 @@ const InviteModel = (() => {
     return Array.isArray(choices) && (choices.length ? choices.includes(detail) : detail === "");
   };
   function status(x) {
-    if (x.closed) return "declined";
+    if (x.closed) return x.closed === "cancelled" ? "cancelled" : "declined";
     if (!x.proposal) return "waiting";
     if (isFullRange(x.proposal)) {
       if (x.mode === "host" && !x.responded) return "waiting";
@@ -174,8 +174,15 @@ const InviteModel = (() => {
     return "waiting";
   }
   function create(d) {
+    const durationMinutes = d.durationMinutes === undefined ? 120 : d.durationMinutes;
+    const timePolicy = d.timePolicy === undefined ? "free" : d.timePolicy;
+    const mode = d.mode || "open";
+    if (!Number.isInteger(durationMinutes) || durationMinutes < 30 || durationMinutes > 720 || durationMinutes % 30)
+      fail("INVALID_INPUT", "相处时长请选择半小时到十二小时，以半小时为单位");
+    if (!["free", "schedule"].includes(timePolicy) || (timePolicy === "schedule" && mode !== "open"))
+      fail("INVALID_INPUT", "交给对方选时间时，才可以使用我的时间表");
     const x = {
-      ...clone(d), mode: d.mode || "open",
+      ...clone(d), mode, durationMinutes, timePolicy,
       id: d.id || (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : String(Date.now())),
       version: 1, approvals: { host: null, guest: null }, responded: false, closed: false, history: [],
     };
@@ -265,6 +272,16 @@ const InviteModel = (() => {
     if (!["host", "guest"].includes(event.role)) fail("INVALID_ROLE", "请选择回应身份");
     if (event.version !== x.version) fail("STALE_VERSION", "安排已经更新，请查看最新安排后再确认");
     if (x.closed) fail("INVITATION_CLOSED", "这份邀请已经结束");
+    if (["durationMinutes", "timePolicy"].some((key) => provided(event, key) || (object(event.proposal) && provided(event.proposal, key))))
+      fail("INVALID_INPUT", "这份邀请的相处时长和时间安排方式已经定好");
+    if (event.type === "cancel") {
+      if (!x.responded) fail("CANCELLATION_NOT_ALLOWED", "回应邀请后，可以在见面安排里取消");
+      if (event.proposal !== undefined) fail("INVALID_INPUT", "取消时无需修改见面安排");
+      x.history.push({ version: x.version, proposal: x.proposal, approvals: x.approvals });
+      x.version++;
+      x.closed = "cancelled";
+      return x;
+    }
     if (event.type !== "decline" && (isFullRange(x.proposal) || isFullRange(event.proposal) || x.mode === "host"))
       return fullRangeTransition(x, event);
     if (event.type === "confirm") {

@@ -22,6 +22,13 @@ try {
       throw new Error('Production database TLS and certificate verification are required.');
     }
     console.log('Production database TLS and certificate verified:', transport.getProtocol());
+    const hasLedger = (await client.query("SELECT to_regclass('app_migrations') AS name")).rows[0].name;
+    const applied = hasLedger ? (await client.query('SELECT name FROM app_migrations ORDER BY name')).rows.map(row => row.name) : [];
+    console.log('Previously applied application migrations:', applied.join(', ') || 'none');
+    if (applied.includes('002_scheduling.sql') && !applied.includes('003_calendar_writer.sql')) {
+      throw new Error('Scheduling was migrated without the writer guard. Reconcile legacy writes before releasing.');
+    }
+
   } finally { client.release(); }
 } finally { await pool.end(); }
 

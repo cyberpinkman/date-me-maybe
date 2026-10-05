@@ -17,6 +17,7 @@ export async function migrateDatabase({ pool, auth }) {
     await authMigration.runMigrations();
     await client.query('CREATE TABLE IF NOT EXISTS app_migrations (name text PRIMARY KEY, digest text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())');
     const directory = fileURLToPath(new URL('../db/migrations/', import.meta.url));
+    const pending = [];
     for (const name of (await readdir(directory)).filter(name => name.endsWith('.sql')).sort()) {
       const sql = await readFile(`${directory}/${name}`, 'utf8');
       const digest = createHash('sha256').update(sql).digest('hex');
@@ -25,13 +26,23 @@ export async function migrateDatabase({ pool, auth }) {
         if (previous.rows[0].digest !== digest) throw new Error(`Applied migration ${name} was changed. Add a new migration instead.`);
         continue;
       }
-      await client.query('BEGIN');
-      try {
+      pending.push({ name, sql, digest });
+    }
+    if (!pending.length) return;
+    await client.query('BEGIN');
+    try {
+      // Drain old invitation readers that intend to write before taking the
+      // backfill snapshot. Keep reads available, but hold every old writer until
+      // the whole pending batch (including its writer guard) commits together.
+      if ((await client.query("SELECT to_regclass('invitations') AS existing")).rows[0].existing) {
+        await client.query('LOCK TABLE invitations IN EXCLUSIVE MODE');
+      }
+      for (const { name, sql, digest } of pending) {
         await client.query(sql);
         await client.query('INSERT INTO app_migrations(name,digest) VALUES($1,$2)', [name, digest]);
-        await client.query('COMMIT');
-      } catch (error) { await client.query('ROLLBACK'); throw error; }
-    }
+      }
+      await client.query('COMMIT');
+    } catch (error) { await client.query('ROLLBACK'); throw error; }
   } finally {
     await client.query("SELECT pg_advisory_unlock(hashtext('opendater-schema'))").catch(() => {});
     client.release();

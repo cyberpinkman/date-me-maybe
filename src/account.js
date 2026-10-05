@@ -10,7 +10,7 @@ let appConfig = { googleEnabled: false, emailOtpEnabled: false, devMailbox: fals
 const draftStorageKey = "opendater-creation-draft-v1";
 function saveCreationDraft(intent = "create") {
   try {
-    sessionStorage.setItem(draftStorageKey, JSON.stringify({ draft, step, intent }));
+    sessionStorage.setItem(draftStorageKey, JSON.stringify({ draft, step, intent, calendarReturn }));
   } catch {}
 }
 function restoreCreationDraft() {
@@ -22,6 +22,8 @@ function restoreCreationDraft() {
         if (typeof saved.draft[key] === "string") restored[key] = saved.draft[key];
       }
       restored.mode = saved.draft.mode === "host" ? "host" : "open";
+      restored.timePolicy = saved.draft.timePolicy === "schedule" ? "schedule" : "free";
+      restored.durationMinutes = Number(saved.draft.durationMinutes) >= 30 && Number(saved.draft.durationMinutes) <= 720 ? Number(saved.draft.durationMinutes) : 120;
       const plan = saved.draft.plan;
       if (plan && typeof plan === "object") {
         if(Array.isArray(plan.timeOptions) && plan.timeOptions.length) restored.plan.timeOptions=plan.timeOptions.slice(0,3).map(slot=>({date:typeof slot?.date==="string"?slot.date:"",time:typeof slot?.time==="string"?slot.time:""}));
@@ -32,7 +34,8 @@ function restoreCreationDraft() {
       }
       draft = restored;
       step = Math.max(0, Math.min(creationSteps().length-1, Number(saved.step) || 0));
-      accountIntent = saved.intent === "list" ? "list" : "create";
+      accountIntent = ["list", "schedule"].includes(saved.intent) ? saved.intent : "create";
+      calendarReturn = saved.calendarReturn === true;
       return true;
     }
   } catch {}
@@ -49,6 +52,7 @@ function resetSenderIdentity() {
   priorFocus = null;
   guestJourney = null;
   hostActivitySelection = null;
+  clearCalendarIdentity();
   role = "host";
   loginEmail = "";
   loginOtp = "";
@@ -66,7 +70,7 @@ function requireAccount(intent) {
   return false;
 }
 function accountView() {
-  return `<section class="account-wrap"><div class="account-card"><p class="eyebrow">KEEP YOUR LITTLE INVITATIONS</p><h1>${accountIntent === "create" ? "把这份心意，<br>好好收进你的账户。" : "你的每一份心意，<br>都在这里。"}</h1><p class="sub">登录后，把邀请发给心里的那个人。<br>TA 的回应，也会替你好好收着。</p>${appConfig.googleEnabled ? '<button class="btn wide google-button" data-action="login-google"><span class="google-letter" aria-hidden="true">G</span>使用 Google 继续</button>' : ""}${appConfig.googleEnabled && appConfig.emailOtpEnabled ? '<div class="account-divider">或者用邮箱</div>' : ""}${appConfig.emailOtpEnabled ? `<form id="email-login-form"><div class="field"><label class="label" for="login-email">邮箱地址</label><input id="login-email" type="email" autocomplete="email" maxlength="254" value="${esc(loginEmail)}" placeholder="you@example.com" required ${otpSent ? "readonly" : ""}></div>${otpSent ? `<div class="field"><label class="label" for="login-otp">邮件里的验证码</label><input id="login-otp" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" value="${esc(loginOtp)}" placeholder="6 位数字" required></div><button type="submit" class="btn primary wide">登录并继续 ${icon("arrow")}</button><div class="account-secondary"><button type="button" class="text-btn" data-action="otp-reset">换个邮箱</button><button type="button" class="text-btn" data-action="otp-resend">重新发送</button></div>` : `<button type="submit" class="btn primary wide">发送登录验证码 ${icon("arrow")}</button>`}</form>` : ""}${!appConfig.googleEnabled && !appConfig.emailOtpEnabled ? '<div class="note-box">暂时还不能登录，先把心意写好，稍后再来吧。</div>' : ""}<p id="account-message" class="account-message" role="status">${esc(accountMessage)}</p>${appConfig.devMailbox ? `<div class="dev-mailbox"><strong>本地验收模式</strong><p>验证码只进入本地测试邮件箱，不会发送真实邮件。可使用 a@example.test、c@example.test。</p><button class="text-btn" data-action="dev-mailbox">本地测试邮件箱</button>${mailboxEmails ? `<ul>${mailboxEmails.length ? mailboxEmails.slice(-8).reverse().map((m) => `<li><span>${esc(m.email)}</span><code>${esc(m.otp)}</code></li>`).join("") : "<li>还没有测试邮件</li>"}</ul>` : ""}</div>` : ""}<button class="text-btn account-back" data-action="home">${icon("back", 15)} 回去继续写邀请</button></div></section>`;
+  return `<section class="account-wrap"><div class="account-card"><p class="eyebrow">KEEP YOUR LITTLE INVITATIONS</p><h1>${accountIntent === "bind" ? "把这次见面，<br>收进自己的日程。" : accountIntent === "schedule" ? "留一点时间，<br>给想见的人。" : accountIntent === "create" ? "把这份心意，<br>好好收进你的账户。" : "你的每一份心意，<br>都在这里。"}</h1><p class="sub">${accountIntent === "bind" ? "登录后关联这份约定，和你的其他安排一起记好。<br>不登录也不影响这次收邀。" : "登录后，把邀请发给心里的那个人。<br>TA 的回应，也会替你好好收着。"}</p>${appConfig.googleEnabled ? '<button class="btn wide google-button" data-action="login-google"><span class="google-letter" aria-hidden="true">G</span>使用 Google 继续</button>' : ""}${appConfig.googleEnabled && appConfig.emailOtpEnabled ? '<div class="account-divider">或者用邮箱</div>' : ""}${appConfig.emailOtpEnabled ? `<form id="email-login-form"><div class="field"><label class="label" for="login-email">邮箱地址</label><input id="login-email" type="email" autocomplete="email" maxlength="254" value="${esc(loginEmail)}" placeholder="you@example.com" required ${otpSent ? "readonly" : ""}></div>${otpSent ? `<div class="field"><label class="label" for="login-otp">邮件里的验证码</label><input id="login-otp" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" value="${esc(loginOtp)}" placeholder="6 位数字" required></div><button type="submit" class="btn primary wide">登录并继续 ${icon("arrow")}</button><div class="account-secondary"><button type="button" class="text-btn" data-action="otp-reset">换个邮箱</button><button type="button" class="text-btn" data-action="otp-resend">重新发送</button></div>` : `<button type="submit" class="btn primary wide">发送登录验证码 ${icon("arrow")}</button>`}</form>` : ""}${!appConfig.googleEnabled && !appConfig.emailOtpEnabled ? '<div class="note-box">暂时还不能登录，先把心意写好，稍后再来吧。</div>' : ""}<p id="account-message" class="account-message" role="status">${esc(accountMessage)}</p>${appConfig.devMailbox ? `<div class="dev-mailbox"><strong>本地验收模式</strong><p>验证码只进入本地测试邮件箱，不会发送真实邮件。可使用 a@example.test、c@example.test。</p><button class="text-btn" data-action="dev-mailbox">本地测试邮件箱</button>${mailboxEmails ? `<ul>${mailboxEmails.length ? mailboxEmails.slice(-8).reverse().map((m) => `<li><span>${esc(m.email)}</span><code>${esc(m.otp)}</code></li>`).join("") : "<li>还没有测试邮件</li>"}</ul>` : ""}</div>` : ""}<button class="text-btn account-back" data-action="${accountIntent === "bind" ? "calendar-bind-back" : "home"}">${icon("back", 15)} ${accountIntent === "bind" ? "回到我们的约定" : "回去继续写邀请"}</button></div></section>`;
 }
 function bindAccount() {
   $("#login-email")?.addEventListener("input", (event) => { loginEmail = event.target.value; });
@@ -83,15 +87,17 @@ async function finishLogin() {
   otpSent = false;
   loginOtp = "";
   accountMessage = "";
-  view = accountIntent === "create" ? "create" : "list";
+  if (accountIntent === "bind") { view = "result"; await completeCalendarBinding(); return; }
+  await loadCalendar();
+  view = accountIntent === "create" ? "create" : accountIntent === "schedule" ? "schedule" : "list";
   // Returning to the review step leaves sending as an explicit sender action.
   saveCreationDraft(accountIntent);
 }
 async function accountAction(actionName) {
   if (actionName === "login-google") {
-    saveCreationDraft(accountIntent);
+    if (accountIntent !== "bind") saveCreationDraft(accountIntent);
     const result = await InviteAPI.post("/api/auth/sign-in/social", {
-      provider: "google", callbackURL: location.origin + "/?login=complete", disableRedirect: true,
+      provider: "google", callbackURL: location.origin + (accountIntent === "bind" ? location.pathname + "?login=complete" : "/?login=complete"), disableRedirect: true,
     });
     if (!result.url) throw InviteAPI.userError("Google 登录暂时不可用，请稍后再试。");
     location.assign(result.url);

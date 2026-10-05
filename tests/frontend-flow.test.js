@@ -9,7 +9,8 @@ const source = (name) => fs.readFileSync(path.join(__dirname, "../src", name + "
 
 function fixture({ guest = false, invitation, signedIn = true, search = "" } = {}) {
   let saved = invitation || Model.create({ id: "invitation-one", from: "小宇", to: "小鹿", message: "想见你", mode: "open" });
-  const writes = [], storage = new Map(), nodes = new Map();
+  const writes = [], reads = [], storage = new Map(), nodes = new Map();
+  let available = null, sessionAvailable = true;
   const node = (value = "") => ({ value, textContent: "", innerHTML: "", focus() {}, addEventListener() {}, querySelectorAll: () => [], querySelector: () => ({ focus() {} }) });
   for (const selector of ["#root", "#toast-root", "#modal-root", "#journey-error", "#proposal-error", "#form-error", "#account-message"]) nodes.set(selector, node());
   const context = vm.createContext({
@@ -20,23 +21,27 @@ function fixture({ guest = false, invitation, signedIn = true, search = "" } = {
     crypto, URLSearchParams, setInterval() {}, setTimeout() {}, clearTimeout() {}, matchMedia: () => ({ matches: true }),
     fetch: async (url, options) => {
       const body = options.body && JSON.parse(options.body);
+      if (!body) reads.push(url);
       if (body) writes.push({ url, body });
       if (url === "/api/config") return {ok:true,status:200,json:async()=>({emailOtpEnabled:true})};
-      if (url === "/api/session") return { ok: true, status: 200, json: async () => ({ user: { id: "sender-one" } }) };
+      if (url === "/api/session") return { ok: true, status: 200, json: async () => ({ user: sessionAvailable ? { id: "sender-one" } : null }) };
+      if (url === "/api/schedule") return {ok:true,status:200,json:async()=>({schedule:{timeZone:"Asia/Shanghai",weekly:{0:[],1:[],2:[],3:[],4:[],5:[],6:[]},overrides:{},configured:true},busy:[],bookings:[],conflicts:[]})};
+      if (url.endsWith("/availability")) return {ok:true,status:200,json:async()=>available || ({timeZone:saved.timeZone,durationMinutes:saved.durationMinutes,slots:[],candidateSlots:(saved.proposal?.timeOptions || []).map(slot=>({...slot,available:true}))})};
+      if (url.endsWith("/bind")) saved={...saved,calendarBound:true};
       if (url === "/api/invitations" && !body) return { ok: true, status: 200, json: async () => ({ invitations: [saved] }) };
       if (url === "/api/invitations" && body) saved = { ...Model.create(body.draft), shareUrl: "https://example.test/i/recipient-token" };
       if (url.endsWith("/actions")) saved = Model.transition(saved, { ...body, role: guest ? "guest" : "host" });
       return { ok: true, status: 200, json: async () => ({ invitation: saved }) };
     },
   });
-  for (const name of ["model", "runaway", "journey", "api-client", "account", "card-export", "app"]) {
+  for (const name of ["model", "runaway", "journey", "api-client", "account", "card-export", "schedule", "app"]) {
     vm.runInContext(name === "app" ? source(name).replace(/\nboot\(\);\s*$/, "") : source(name), context);
   }
   const run = (code) => vm.runInContext(code, context);
   const data = (code) => JSON.parse(run(`JSON.stringify(${code})`));
   run(`booting = false; appConfig.emailOtpEnabled = true; sessionUser = ${signedIn ? '{id:"sender-one"}' : 'null'}; invitations = [${JSON.stringify(saved)}]; currentId = invitations[0].id; role = ${JSON.stringify(guest ? "guest" : "host")}; view = ${JSON.stringify(guest ? "guest" : "host")};`);
   const act = (name, dataset = {}) => run(`action(${JSON.stringify(name)}, {tagName:"BUTTON", dataset:${JSON.stringify(dataset)}})`);
-  return { run, data, act, writes, storage, nodes, node };
+  return { run, data, act, writes, reads, storage, nodes, node, availability: value => { available = value; }, session: value => { sessionAvailable = value; } };
 }
 const schedule = { date: "2099-10-07", time: "18:30", place: "湖边咖啡店" };
 const ranged = () => Model.transition(Model.create({ id: "range-one", from: "小宇", to: "小鹿", message: "想见你", mode: "open" }), {
@@ -48,18 +53,18 @@ test("creating after sign-in keeps the written invitation and sends no sender ar
   const f = fixture({ signedIn: false });
   f.storage.set("opendater-creation-draft-v1", JSON.stringify({ draft: { from: "旧草稿昵称", to: "心里的人", tone: "gentle", message: "想和你见一面", mode: "fixed", options: [schedule], activity: "吃点好吃的", place: "旧地点", ownerId: "not-an-owner" }, step: 2 }));
   f.run("restoreCreationDraft(); view='create'");
-  assert.equal(f.run("step"), 1);
+  assert.equal(f.run("step"), 2);
   assert.equal(f.run("draft.mode"), "open");
   await f.act("create");
   assert.equal(f.run("view"), "account");
   assert.equal(f.writes.length, 0);
   await f.run("finishLogin()");
   assert.equal(f.run("view"), "create");
-  assert.equal(f.run("step"), 1);
+  assert.equal(f.run("step"), 2);
   await f.act("create");
   assert.equal(f.writes.length, 1);
   const payload = f.writes[0].body.draft;
-  assert.deepEqual(Object.keys(payload).sort(), ["from", "to", "tone", "message", "mode", "timeZone"].sort());
+  assert.deepEqual(Object.keys(payload).sort(), ["from", "to", "tone", "message", "mode", "timeZone", "timePolicy", "durationMinutes"].sort());
   assert.equal(payload.from, "旧草稿昵称");
   assert.equal(payload.message, "想和你见一面");
   assert.equal(payload.mode, "open");
@@ -331,4 +336,135 @@ test("singleton plans are accepted directly, and the creation link appears only 
   assert.equal(fresh.run("step"),0);
   assert.notEqual(fresh.run("draft.from"),"旧名字");
   assert.equal(fresh.run("view"),"create");
+});
+
+test("schedule setup preserves creation choices and blocks sending until availability is saved", async () => {
+  const f = fixture({signedIn:false});
+  f.run('view="create"; draft.durationMinutes=180; draft.timePolicy="schedule"; step=1');
+  await f.act("next");
+  assert.equal(f.run("step"),1);
+  assert.match(f.nodes.get("#form-error").textContent,/时间表/);
+  await f.act("schedule-from-draft");
+  assert.equal(f.run("view"),"account");
+  assert.equal(f.run("accountIntent"),"schedule");
+  f.run("restoreCreationDraft()");
+  await f.run("finishLogin()");
+  assert.equal(f.run("view"),"schedule");
+  assert.equal(f.run("calendarReturn"),true);
+  await f.act("calendar-return");
+  assert.equal(f.run("draft.durationMinutes"),180);
+  assert.equal(f.run("draft.timePolicy"),"schedule");
+  await f.act("next");
+  assert.equal(f.run("step"),2);
+  await f.act("create");
+  assert.equal(f.writes[0].body.draft.timeZone,"Asia/Shanghai");
+  assert.equal(f.writes[0].body.draft.durationMinutes,180);
+});
+
+test("scheduled guests can select at most three available slots and cannot advance with stale choices", async () => {
+  const x=Model.create({id:"scheduled",from:"A",to:"B",message:"想见你",mode:"open",timePolicy:"schedule",durationMinutes:120});
+  const f=fixture({guest:true,invitation:x,signedIn:false});
+  const day=f.run("future(2)"), slots=["14:00","15:00","16:00","17:00"].map(time=>({date:day,time}));
+  f.availability({slots,candidateSlots:[],timeZone:"Asia/Shanghai",durationMinutes:120});
+  await f.run("loadAvailability()");
+  f.run("startGuestJourney(current()); guestJourney.scene='time'");
+  assert.doesNotMatch(f.run("journeyView(current())"),/data-plan-input/);
+  assert.match(f.run("journeyView(current())"),/availability-slots/);
+  for(const slot of slots)await f.act("availability-slot",{target:"journey",...slot});
+  assert.equal(f.run("guestJourney.plan.timeOptions.length"),3);
+  assert.equal(f.writes.length,0);
+  f.availability({slots:[],candidateSlots:[],timeZone:"Asia/Shanghai",durationMinutes:120});
+  await f.act("availability-refresh");
+  await f.act("journey-next");
+  assert.equal(f.run("guestJourney.scene"),"time");
+  assert.match(f.run("journeyView(current())"),/已不可选/);
+  assert.equal(f.writes.length,0);
+});
+
+test("opening a recipient link never binds an account; an explicit result action supports optional login", async () => {
+  const f=fixture({guest:true,invitation:scopedInvitation("open",true),signedIn:false});
+  f.session(false);
+  await f.run("boot()");
+  assert.equal(f.writes.length,0);
+  assert.ok(!f.reads.includes("/api/session"),"ordinary recipient loading does not resolve account identity");
+  assert.match(f.run("guestView()"),/加入我的日程/);
+  await f.act("calendar-bind");
+  assert.equal(f.run("view"),"account");
+  assert.equal(f.run("accountIntent"),"bind");
+  assert.equal(f.writes.length,0);
+  assert.match(f.run("accountView()"),/不登录也不影响这次收邀/);
+  f.session(true);
+  await f.run("finishLogin()");
+  assert.equal(f.writes.length,1);
+  assert.equal(f.writes[0].url,"/api/guest/recipient-token/bind");
+  assert.deepEqual(f.writes[0].body,{});
+  assert.equal(f.run("view"),"result");
+  assert.equal(f.run("current().calendarBound"),true);
+  assert.match(f.run("guestView()"),/已加入受邀人的日程/);
+  assert.equal(f.storage.has("opendater-calendar-bind"),false);
+});
+
+test("unavailable candidates disable the chooser while the author can repair times, including before a first response", async () => {
+  for(const mode of ["host","open"]) {
+    const x=scopedInvitation(mode), blocked={slots:[],candidateSlots:x.proposal.timeOptions.map(slot=>({...slot,available:false})),timeZone:"Asia/Shanghai",durationMinutes:120};
+    const author=fixture({guest:mode==="open",invitation:x});
+    author.availability(blocked);
+    await author.run("loadAvailability()");
+    author.run(mode==="open" ? "view='result'" : "view='host'");
+    assert.match(author.run("resultActions(current())"),/change-candidates/);
+    await author.act("change-candidates");
+    assert.equal(author.run("modal.rangeTime"),true);
+    author.run('modal.plan.timeOptions=[{date:"2099-10-09",time:"19:00"}]');
+    await author.act("submit-proposal");
+    assert.deepEqual(Object.keys(author.writes[0].body.proposal),["timeOptions"]);
+    assert.equal(author.run("current().responded"),mode==="open");
+    const chooser=fixture({guest:mode==="host",invitation:x});
+    chooser.availability(blocked);
+    await chooser.run("loadAvailability()");
+    if(mode==="host") {
+      chooser.run("startGuestJourney(current()); guestJourney.scene='time'");
+      assert.match(chooser.run("journeyView(current())"),/data-action="journey-next" disabled/);
+    } else assert.match(chooser.run("resultActions(current())"),/data-action="finalize" disabled/);
+    assert.doesNotMatch(chooser.run("resultActions(current())"),/change-candidates/);
+  }
+});
+
+test("calendar copy and cancellation stay out of the initial emotional invitation", async () => {
+  const f=fixture({guest:true,invitation:scopedInvitation("host",true)});
+  assert.doesNotMatch(f.run("guestView()"),/取消这次约定|加入我的日程|拒绝/);
+  await f.act("journey-yes"); await f.act("journey-accept");
+  assert.match(f.run("guestView()"),/取消这次约定/);
+  await f.act("cancel-invitation");
+  assert.equal(f.run("InviteModel.status(current())"),"confirmed");
+  await f.act("confirm-cancel");
+  assert.equal(f.run("InviteModel.status(current())"),"cancelled");
+  assert.match(f.run("guestView()"),/约定已取消/);
+  assert.doesNotMatch(f.run("guestView()"),/data-action="confirm"|data-action="change"/);
+  await f.run("loadCalendar()");
+  assert.doesNotMatch(f.run("calendarView()"),/数据库|工程|JSON|事务|接口|API/);
+});
+
+test("busy entries cannot be interpreted in an unsaved timezone, and migration issues expose repair links", async () => {
+  const f=fixture();
+  await f.run("loadCalendar()");
+  f.run('calendarDraft.timeZone="America/New_York"');
+  await f.act("calendar-add-busy");
+  assert.equal(f.writes.length,0);
+  assert.match(f.nodes.get("#toast-root").innerHTML,/先保存新的日程时区/);
+  f.run('calendarData.conflicts=[{invitationId:"old-invitation"}]');
+  assert.match(f.run("calendarView()"),/data-action="open" data-id="old-invitation"/);
+});
+
+test("all-day busy entries carry the calendar-day intent and leave invitation duration unchanged", async () => {
+  const f=fixture();
+  await f.run("loadCalendar()");
+  for(const [selector,value] of Object.entries({"#busy-date":"2099-10-07","#busy-start":"18:00","#busy-end":"20:00","#busy-label":"出行"}))f.nodes.set(selector,f.node(value));
+  f.nodes.set("#busy-all-day",{...f.node(),checked:true});
+  await f.act("calendar-add-busy");
+  assert.equal(f.writes.length,1);
+  assert.equal(f.writes[0].url,"/api/schedule/busy");
+  assert.equal(f.writes[0].body.time,undefined);
+  assert.equal(f.writes[0].body.durationMinutes,undefined);
+  assert.equal(f.writes[0].body.allDay,true);
+  assert.equal(f.run("draft.durationMinutes"),120);
 });

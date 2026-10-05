@@ -3,12 +3,14 @@ import Model from '../src/model.js';
 import { ApiError, notFound } from './errors.mjs';
 import { digest, fingerprint, createGuestToken, encryptToken, decryptToken, isGuestToken } from './crypto.mjs';
 import { fields, isUuid, requestId, validateDraft, validateEvent, validateProposal } from './validation.mjs';
+import { createSchedulingService } from './scheduling.mjs';
 
 const modelErrorStatus = Object.freeze({
   INVALID_INPUT: 422, INVALID_ROLE: 422, STALE_VERSION: 409,
   INVITATION_CLOSED: 410, MISSING_PROPOSAL: 422, ALREADY_RESPONDED: 409,
   ACTIVITY_SELECTION_REQUIRED: 422, INVALID_ACTIVITY_SELECTION: 422,
   FINALIZATION_NOT_ALLOWED: 409,
+  CANCELLATION_NOT_ALLOWED: 409,
 });
 function modelResult(run) {
   try { return run(); }
@@ -21,15 +23,22 @@ function modelResult(run) {
 }
 
 export function createInvitationService({ pool, config }) {
+  const scheduling = createSchedulingService({ pool });
   const serialize = (row, owner = false, state = row.state) => {
     const result = { ...state, createdAt: new Date(row.created_at).toISOString(), updatedAt: new Date(row.updated_at).toISOString() };
     if (owner) result.shareUrl = `${config.origin}/i/${decryptToken(row.guest_token_encrypted, config.shareSecret)}`;
     return result;
   };
+  async function present(client, row, owner = false) {
+    return serialize(row, owner, { ...row.state, ...await scheduling.getBinding(client, row) });
+  }
   async function transaction(run) {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+      // Transaction-local: pooled sessions must never grant this capability to
+      // an older deployment that does not synchronize calendar reservations.
+      await client.query("SELECT set_config('opendater.calendar_writer','v1',true)");
       const result = await run(client);
       await client.query('COMMIT');
       return result;
@@ -47,7 +56,7 @@ export function createInvitationService({ pool, config }) {
     const { clause, params, role } = where(access);
     const result = await pool.query(`SELECT * FROM invitations WHERE ${clause}`, params);
     if (!result.rowCount) throw notFound();
-    return serialize(result.rows[0], role === 'host');
+    return present(pool, result.rows[0], role === 'host');
   }
   async function create(ownerId, input) {
     fields(input, ['draft', 'requestId']);
@@ -59,12 +68,13 @@ export function createInvitationService({ pool, config }) {
       if (previous.rowCount) {
         if (previous.rows[0].request_hash !== hash) throw new ApiError(409, 'IDEMPOTENCY_CONFLICT', '这份邀请已经有变化，刷新页面后再试一次吧。');
         const stored = await client.query('SELECT * FROM invitations WHERE id=$1 AND owner_id=$2', [previous.rows[0].invitation_id, ownerId]);
-        return serialize(stored.rows[0], true);
+        return present(client, stored.rows[0], true);
       }
       const id = randomUUID(), token = createGuestToken(), state = modelResult(() => Model.create({ ...draft, id }));
       const inserted = await client.query('INSERT INTO invitations(id,owner_id,guest_token_hash,guest_token_encrypted,state,version) VALUES($1,$2,$3,$4,$5,1) RETURNING *', [id, ownerId, digest(token), encryptToken(token, config.shareSecret), state]);
+      await scheduling.assertProposal(client, inserted.rows[0], state, { type: 'create', proposal: draft.plan });
       await client.query('INSERT INTO invitation_creations(owner_id,request_id,request_hash,invitation_id) VALUES($1,$2,$3,$4)', [ownerId, key, hash, id]);
-      return serialize(inserted.rows[0], true);
+      return present(client, inserted.rows[0], true);
     });
   }
   async function transition(access, input) {
@@ -91,17 +101,51 @@ export function createInvitationService({ pool, config }) {
       // Validate the exact canonical proposal that will be persisted, after the
       // model enforces role/range rules and before either database write. A
       // confirmation also commits consent to its selected future schedule.
-      validateProposal(next.proposal, row.state.timeZone || 'Asia/Shanghai', event.proposal ?? {});
+      if (event.type !== 'cancel') {
+        validateProposal(next.proposal, row.state.timeZone || 'Asia/Shanghai', event.proposal ?? {});
+        await scheduling.assertProposal(client, row, next, event);
+      }
+      // Invitation consent and every participant's reservation share a commit.
+      // A pending revision retains its last confirmed reservation until replaced.
+      await scheduling.syncConfirmed(client, row, next);
       const updated = await client.query('UPDATE invitations SET state=$1,version=$2,updated_at=now() WHERE id=$3 RETURNING *', [next, next.version, row.id]);
-      await client.query('INSERT INTO invitation_requests(invitation_id,actor,request_id,request_hash,response) VALUES($1,$2,$3,$4,$5)', [row.id, role, event.requestId, hash, next]);
-      return serialize(updated.rows[0], role === 'host');
+      const response = { ...next, ...await scheduling.getBinding(client, updated.rows[0]) };
+      await client.query('INSERT INTO invitation_requests(invitation_id,actor,request_id,request_hash,response) VALUES($1,$2,$3,$4,$5)', [row.id, role, event.requestId, hash, response]);
+      return serialize(updated.rows[0], role === 'host', response);
     });
   }
   return {
-    create, read, transition,
+    create, read, transition, scheduling,
+    async availability(access) {
+      const { clause, params } = where(access);
+      const selected = await pool.query(`SELECT * FROM invitations WHERE ${clause}`, params);
+      if (!selected.rowCount) throw notFound();
+      return scheduling.availability(selected.rows[0]);
+    },
+    async bindGuest(token, userId, input) {
+      fields(input, []);
+      const { clause, params } = where({ token });
+      return transaction(async client => {
+        const selected = await client.query(`SELECT * FROM invitations WHERE ${clause} FOR UPDATE`, params);
+        if (!selected.rowCount) throw notFound();
+        const row = selected.rows[0];
+        await scheduling.bindGuest(client, row, userId);
+        return present(client, row);
+      });
+    },
+    async calendar(userId) {
+      const [schedule, calendar] = await Promise.all([scheduling.getSchedule(userId), scheduling.listCalendar(userId)]);
+      const ids = calendar.bookings.filter(item => item.role === 'guest').map(item => item.invitationId);
+      if (ids.length) {
+        const links = await pool.query('SELECT id,guest_token_encrypted FROM invitations WHERE id=ANY($1::uuid[])', [ids]);
+        const urls = new Map(links.rows.map(row => [row.id, `${config.origin}/i/${decryptToken(row.guest_token_encrypted, config.shareSecret)}`]));
+        calendar.bookings = calendar.bookings.map(item => item.role === 'guest' ? { ...item, guestUrl: urls.get(item.invitationId) } : item);
+      }
+      return { schedule, ...calendar };
+    },
     async list(ownerId) {
       const result = await pool.query('SELECT * FROM invitations WHERE owner_id=$1 ORDER BY updated_at DESC,id DESC', [ownerId]);
-      return result.rows.map(row => serialize(row, true));
+      return Promise.all(result.rows.map(row => present(pool, row, true)));
     },
   };
 }

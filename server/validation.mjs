@@ -77,10 +77,14 @@ export function requestId(value) {
   return value;
 }
 export function validateDraft(input) {
-  fields(input, ['from', 'to', 'tone', 'message', 'mode', 'options', 'activity', 'place', 'timeZone', 'plan']);
+  fields(input, ['from', 'to', 'tone', 'message', 'mode', 'options', 'activity', 'place', 'timeZone', 'plan', 'durationMinutes', 'timePolicy']);
   const timeZone = timezone(input.timeZone);
   if (!['gentle', 'direct', 'playful'].includes(input.tone) || !['host', 'open', 'fixed', 'flexible'].includes(input.mode)) fail('再选一下开场语气和见面时间吧。');
-  const invitation = { from: text(input.from, '昵称', 16), to: text(input.to, '对方昵称', 16), message: text(input.message, '邀请语', 120), tone: input.tone, mode: input.mode, timeZone };
+  const durationMinutes = input.durationMinutes === undefined ? 120 : input.durationMinutes;
+  const timePolicy = input.timePolicy === undefined ? 'free' : input.timePolicy;
+  if (!Number.isInteger(durationMinutes) || durationMinutes < 30 || durationMinutes > 720 || durationMinutes % 30) fail('相处时长请选择半小时到十二小时，以半小时为单位。');
+  if (!['free', 'schedule'].includes(timePolicy) || (timePolicy === 'schedule' && input.mode !== 'open')) fail('交给对方选时间时，才可以使用我的时间表。');
+  const invitation = { from: text(input.from, '昵称', 16), to: text(input.to, '对方昵称', 16), message: text(input.message, '邀请语', 120), tone: input.tone, mode: input.mode, timeZone, durationMinutes, timePolicy };
   if (input.mode !== 'host' && 'plan' in input) fail('请按邀请模式填写见面安排。');
   if (input.mode === 'host' || input.mode === 'open') {
     if (input.options !== undefined && (!Array.isArray(input.options) || input.options.length !== 0)) fail('这份邀请先留一点期待，具体安排等 TA 来选。');
@@ -103,14 +107,14 @@ export function validateDraft(input) {
 }
 export function validateEvent(input, role) {
   fields(input, ['type', 'version', 'proposal', 'requestId']);
-  const types = role === 'host' ? ['confirm', 'propose', 'finalize'] : ['respond', 'confirm', 'propose', 'finalize'];
+  const types = role === 'host' ? ['confirm', 'propose', 'finalize', 'cancel'] : ['respond', 'confirm', 'propose', 'finalize', 'cancel'];
   if (!types.includes(input.type)) fail('这次没能保存，刷新页面后再试一次吧。');
   if (!Number.isSafeInteger(input.version) || input.version < 1) fail('这次没能保存，刷新页面后再试一次吧。');
   requestId(input.requestId);
   if (input.type === 'finalize') {
     fields(input.proposal, ['date', 'time', 'place', 'activity', 'detail']);
     for (const [key, value] of Object.entries(input.proposal)) text(value, '最终安排', key === 'date' ? 10 : key === 'time' ? 5 : 60, true);
-  } else if (input.type !== 'confirm') {
+  } else if (!['confirm', 'cancel'].includes(input.type)) {
     fields(input.proposal, ['date', 'time', 'place', 'activity', 'activities', 'preferences', 'timeOptions', 'placeOptions']);
     if (fullRange(input.proposal)) {
       scopeOptions(input.proposal, undefined, false, input.type === 'propose');

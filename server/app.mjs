@@ -7,6 +7,7 @@ import { createInvitationService } from './invitations.mjs';
 import { ApiError } from './errors.mjs';
 import { digest } from './crypto.mjs';
 import { resolveClientIp } from './client-ip.mjs';
+import { fields, isUuid } from './validation.mjs';
 
 const loopback = ip => ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(ip);
 
@@ -56,12 +57,33 @@ export function createApplication({ pool, config, mailer }) {
   app.get('/api/health', async (req, res) => { await pool.query('SELECT 1'); res.json({ ok: true }); });
   if (config.devMailbox) app.get('/api/dev/mailbox', (req, res) => res.json({ emails: mailer.getInbox() }));
 
+  app.get('/api/schedule', requireOwner, async (req, res) => res.json(await service.calendar(req.ownerId)));
+  app.post('/api/schedule', requireOwner, async (req, res) => {
+    await rateLimit(`schedule:${req.ownerId}`, 120);
+    fields(req.body, ['schedule']);
+    await service.scheduling.saveSchedule(req.ownerId, req.body.schedule);
+    res.json(await service.calendar(req.ownerId));
+  });
+  app.post('/api/schedule/busy', requireOwner, async (req, res) => {
+    await rateLimit(`schedule:${req.ownerId}`, 120);
+    await service.scheduling.addBusy(req.ownerId, req.body);
+    res.status(201).json(await service.calendar(req.ownerId));
+  });
+  app.post('/api/schedule/busy/:id/remove', requireOwner, async (req, res) => {
+    await rateLimit(`schedule:${req.ownerId}`, 120);
+    fields(req.body, []);
+    if (!isUuid(req.params.id)) throw new ApiError(404, 'BUSY_NOT_FOUND', '这段忙碌时间已经不在日程里了。');
+    await service.scheduling.removeBusy(req.ownerId, req.params.id);
+    res.json(await service.calendar(req.ownerId));
+  });
+
   app.get('/api/invitations', requireOwner, async (req, res) => res.json({ invitations: await service.list(req.ownerId) }));
   app.post('/api/invitations', requireOwner, async (req, res) => {
     await rateLimit(`create:${req.ownerId}`, 30, 3600);
     res.status(201).json({ invitation: await service.create(req.ownerId, req.body) });
   });
   app.get('/api/invitations/:id', requireOwner, async (req, res) => res.json({ invitation: await service.read({ ownerId: req.ownerId, id: req.params.id }) }));
+  app.get('/api/invitations/:id/availability', requireOwner, async (req, res) => res.json(await service.availability({ ownerId: req.ownerId, id: req.params.id })));
   app.post('/api/invitations/:id/actions', requireOwner, async (req, res) => {
     await rateLimit(`host-action:${req.ownerId}`, 120);
     res.json({ invitation: await service.transition({ ownerId: req.ownerId, id: req.params.id }, req.body) });
@@ -73,6 +95,14 @@ export function createApplication({ pool, config, mailer }) {
   app.post('/api/guest/:token/actions', async (req, res) => {
     await rateLimit(`guest-action:${req.clientIp}`, 120);
     res.json({ invitation: await service.transition({ token: req.params.token }, req.body) });
+  });
+  app.get('/api/guest/:token/availability', async (req, res) => {
+    await rateLimit(`guest-availability:${req.clientIp}`, 120);
+    res.json(await service.availability({ token: req.params.token }));
+  });
+  app.post('/api/guest/:token/bind', requireOwner, async (req, res) => {
+    await rateLimit(`guest-bind:${req.ownerId}`, 30);
+    res.json({ invitation: await service.bindGuest(req.params.token, req.ownerId, req.body) });
   });
   app.use('/api', (req, res, next) => next(new ApiError(404, 'NOT_FOUND', '暂时打不开这里，请检查链接后再试。')));
   const dist = fileURLToPath(new URL('../dist/', import.meta.url));

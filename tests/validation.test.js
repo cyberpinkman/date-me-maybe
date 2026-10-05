@@ -24,7 +24,7 @@ const scopedProposal = (patch = {}) => ({
 
 test('open invitations leave the arrangement empty while legacy drafts remain valid', async () => {
   const { validateDraft } = await validation;
-  assert.deepEqual(validateDraft(openDraft), { ...openDraft, from: 'A', to: 'B', options: [], activity: '', place: '' });
+  assert.deepEqual(validateDraft(openDraft), { ...openDraft, from: 'A', to: 'B', options: [], activity: '', place: '', durationMinutes: 120, timePolicy: 'free' });
   for (const preset of [{ options: [{ date, time: '18:30' }] }, { options: null }, { activity: '喝杯咖啡' }, { place: '预定地点' }]) {
     assert.throws(() => validateDraft({ ...openDraft, ...preset }), invalid);
   }
@@ -33,6 +33,38 @@ test('open invitations leave the arrangement empty while legacy drafts remain va
     const draft = validateDraft({ ...openDraft, mode, options, activity: '喝杯咖啡', place: '' });
     assert.equal(draft.mode, mode);
     assert.equal(draft.options.length, options.length);
+  }
+});
+
+test('draft scheduling metadata validates duration and allows a personal schedule only in open mode', async () => {
+  const { validateDraft } = await validation;
+  for (const durationMinutes of [30, 120, 720]) {
+    const draft = validateDraft({ ...openDraft, durationMinutes, timePolicy: 'schedule' });
+    assert.equal(draft.durationMinutes, durationMinutes);
+    assert.equal(draft.timePolicy, 'schedule');
+  }
+  for (const durationMinutes of [null, '120', 0, 29, 31, 721, Infinity, NaN])
+    assert.throws(() => validateDraft({ ...openDraft, durationMinutes }), invalid);
+  for (const timePolicy of [null, '', 'busy', 1])
+    assert.throws(() => validateDraft({ ...openDraft, timePolicy }), invalid);
+  for (const mode of ['host', 'fixed', 'flexible'])
+    assert.throws(() => validateDraft({ ...openDraft, mode, timePolicy: 'schedule' }), invalid);
+  const host = validateDraft({ ...openDraft, mode: 'host', plan: plan(), durationMinutes: 180 });
+  assert.equal(host.durationMinutes, 180);
+  assert.equal(host.timePolicy, 'free');
+});
+
+test('cancel is a payload-free action and event inputs cannot change scheduling metadata', async () => {
+  const { validateEvent } = await validation;
+  for (const role of ['host', 'guest']) {
+    const cancel = { type: 'cancel', version: 1, requestId: randomUUID() };
+    assert.equal(validateEvent(cancel, role), cancel);
+    for (const proposal of [null, {}, { date: '2000-01-01', time: '18:00' }])
+      assert.throws(() => validateEvent({ ...cancel, proposal }, role), invalid);
+    for (const patch of [{ durationMinutes: 60 }, { timePolicy: 'free' }]) {
+      assert.throws(() => validateEvent({ ...cancel, ...patch }, role), invalid);
+      assert.throws(() => validateEvent({ ...cancel, type: 'propose', proposal: { time: '20:00', ...patch } }, role), invalid);
+    }
   }
 });
 

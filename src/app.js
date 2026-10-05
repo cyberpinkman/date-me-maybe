@@ -68,9 +68,9 @@ const fmt = (d, weekday = true) => {
 };
 const emptyPlan = () => ({ timeOptions: [{date:"",time:""}], placeOptions: [""], activities: [], preferences: {hints:[],details:{}} });
 const defaultDraft = () => ({
-  from: "小宇", to: "小鹿", tone: "playful", message: tones[2][2], mode: "open", plan: emptyPlan(),
+  from: "小宇", to: "小鹿", tone: "playful", message: tones[2][2], mode: "open", timePolicy: "free", durationMinutes: 120, plan: emptyPlan(),
 });
-const creationSteps = () => draft.mode === "host" ? ["写点心里话", "安排见面", "检查邀请"] : ["写点心里话", "检查邀请"];
+const creationSteps = () => ["写点心里话", draft.mode === "host" ? "安排见面" : "留点时间", "检查邀请"];
 let draft = defaultDraft(),
   step = 0,
   view = "create",
@@ -98,6 +98,7 @@ function invitationEndpoint() {
 async function refreshCurrent() {
   const data = await InviteAPI.get(invitationEndpoint());
   mergeInvitation(data.invitation);
+  await loadAvailability(data.invitation);
   return data.invitation;
 }
 async function boot() {
@@ -112,6 +113,18 @@ async function boot() {
       invitations = [result.invitation];
       currentId = result.invitation.id;
       view = InviteModel.status(result.invitation) === "waiting" ? "guest" : "result";
+      await loadAvailability(result.invitation);
+      if (new URLSearchParams(location.search).has("login")) {
+        sessionUser = (await InviteAPI.get("/api/session")).user;
+        let bindingRequested = false;
+        try { bindingRequested = sessionStorage.getItem("opendater-calendar-bind") === guestToken; } catch {}
+        if (bindingRequested) {
+          accountIntent = "bind";
+          if (sessionUser) { try { await completeCalendarBinding(); } catch (error) { view = "result"; setTimeout(() => toast(InviteAPI.message(error)), 0); } }
+          else { view = "account"; accountMessage = "登录还没完成，这份约定还在，可以重新试一次。"; }
+        }
+        history.replaceState(null, "", location.pathname);
+      }
     } else {
       const query = new URLSearchParams(location.search);
       const fresh = query.get("create") === "new";
@@ -121,16 +134,18 @@ async function boot() {
         saveCreationDraft(); history.replaceState(null, "", "/");
       }
       sessionUser = (await InviteAPI.get("/api/session")).user;
-      if (sessionUser) await refreshInvitations();
+      if (sessionUser) { await refreshInvitations(); await loadCalendar(); }
       const selectedId = query.get("invitation");
-      if (selectedId && sessionUser) {
+      if (query.has("schedule")) {
+        if (requireAccount("schedule")) view = "schedule";
+      } else if (selectedId && sessionUser) {
         currentId = selectedId;
         await refreshCurrent();
         view = "host";
       } else if (selectedId) {
         requireAccount("list");
       } else if (query.has("login")) {
-        view = sessionUser ? (restored && accountIntent === "list" ? "list" : "create") : "account";
+        view = sessionUser ? (restored && ["list", "schedule"].includes(accountIntent) ? accountIntent : "create") : "account";
         if (!sessionUser) accountMessage = "登录没有完成，草稿还在，可以重新试一次。";
         history.replaceState(null, "", "/");
       } else if (query.has("error")) {
@@ -154,6 +169,7 @@ const statusNames = {
   details: "还差一个见面地点",
   confirmed: "已经约好啦",
   declined: "这次先不了",
+  cancelled: "约定已取消",
 };
 const statusText = (x) => {
   const status = InviteModel.status(x);
@@ -208,8 +224,8 @@ function proposalForDisplay(x) { return x.proposal || (x.mode === "host" ? x.pla
 function cleanPlan(plan) {
   return { timeOptions: plan.timeOptions.map(({date,time}) => ({date,time})), placeOptions: plan.placeOptions.map((place) => place.trim()), activities: [...plan.activities], preferences: { hints:[...(plan.preferences?.hints || [])], details: Object.fromEntries(plan.activities.map((activity) => [activity, detailChoices(plan.preferences?.details?.[activity])])) } };
 }
-function validatePlan(plan) {
-  if (!plan.timeOptions?.length || plan.timeOptions.some((slot) => !slot.date || !slot.time || !Number.isFinite(new Date(`${slot.date}T${slot.time}`).getTime()) || new Date(`${slot.date}T${slot.time}`) <= new Date())) return "把候选时间选完整，都要是还没到来的时间哦。";
+function validatePlan(plan, zone = view === "create" ? draftTimeZone() : current()?.timeZone || "Asia/Shanghai") {
+  if (!plan.timeOptions?.length || plan.timeOptions.some((slot) => !slot.date || !slot.time || !futureSlot(slot, zone))) return "把候选时间选完整，都要是还没到来的时间哦。";
   if (!plan.placeOptions?.length || plan.placeOptions.some((place) => !place.trim())) return "把想见面的地点写好，再把心意交给对方吧。";
   if (!plan.activities?.length) return "至少选一种愿意一起做的事吧。";
   return "";
@@ -232,7 +248,7 @@ function selectedArrangement(x) {
   return hostActivitySelection;
 }
 function selectionComplete(p, selection) {
-  return !!(selection.date && selection.time && selection.place && selection.activity && (!detailChoices(p.preferences?.details?.[selection.activity]).length || selection.detail));
+  return !!(selection.date && selection.time && selection.place && selection.activity && (!detailChoices(p.preferences?.details?.[selection.activity]).length || selection.detail) && slotAvailable(selection));
 }
 function selectionPayload(selection) { return Object.fromEntries(["date","time","place","activity","detail"].map((key)=>[key,selection[key]||""])); }
 function selectArrangement(selection,p,field,value) {
@@ -247,11 +263,11 @@ function selectArrangement(selection,p,field,value) {
 }
 function fullChoiceFields(x) {
   const p=x.proposal, selected=selectedArrangement(x);
-  const choices=(label,field,items,labels,chosen)=> items.length>1 ? `<fieldset class="host-activity-choices"><legend>${label}</legend><div role="radiogroup" aria-label="${label}">${items.map((value,index)=>`<button class="host-activity-choice ${chosen(value)?"selected":""}" role="radio" aria-checked="${chosen(value)}" data-action="plan-choice" data-field="${field}" data-index="${index}"><span>${esc(labels(value))}</span><i class="radio"></i></button>`).join("")}</div></fieldset>`:"";
+  const choices=(label,field,items,labels,chosen)=> items.length>1 || field === "time" ? `<fieldset class="host-activity-choices"><legend>${label}</legend><div role="radiogroup" aria-label="${label}">${items.map((value,index)=>`<button class="host-activity-choice ${chosen(value)?"selected":""}" role="radio" aria-checked="${chosen(value)}" data-action="plan-choice" data-field="${field}" data-index="${index}" ${field === "time" && !slotAvailable(value) ? "disabled" : ""}><span>${esc(labels(value))}${field === "time" && !slotAvailable(value) ? '<small>这个时间已不可选</small>' : ""}</span><i class="radio"></i></button>`).join("")}</div></fieldset>`:"";
   return choices("挑一个见面时间","time",p.timeOptions,timeLabel,v=>selected.date===v.date&&selected.time===v.time)+choices("在哪里碰面？","place",p.placeOptions,v=>v,v=>selected.place===v)+choices("这次，我们就选一个。","activity",p.activities,v=>v,v=>selected.activity===v)+(selected.activity?choices("再挑一个具体的小安排","detail",detailChoices(p.preferences?.details?.[selected.activity]),v=>v,v=>selected.detail===v):"");
 }
 function timeFields(plan,prefix) {
-  return `<div class="candidate-list">${plan.timeOptions.map((slot,index)=>`<div class="candidate-row"><div class="columns"><div><label class="label" for="${prefix}-date-${index}">日期${plan.timeOptions.length>1?` ${index+1}`:""}</label><input id="${prefix}-date-${index}" data-plan-input="${prefix}" data-kind="date" data-index="${index}" type="date" min="${dateString(new Date())}" value="${esc(slot.date)}"></div><div><label class="label" for="${prefix}-time-${index}">时间</label><input id="${prefix}-time-${index}" data-plan-input="${prefix}" data-kind="time" data-index="${index}" type="time" value="${esc(slot.time)}"></div></div>${plan.timeOptions.length>1?`<button class="text-btn candidate-remove" data-action="${prefix}-remove-time" data-index="${index}" aria-label="移除候选时间 ${index+1}">移除</button>`:""}</div>`).join("")}</div>${plan.timeOptions.length<3?`<button class="text-btn candidate-add" data-action="${prefix}-add-time">＋ 再留一个时间</button>`:""}`;
+  return `<div class="candidate-list">${plan.timeOptions.map((slot,index)=>`<div class="candidate-row"><div class="columns"><div><label class="label" for="${prefix}-date-${index}">日期${plan.timeOptions.length>1?` ${index+1}`:""}</label><input id="${prefix}-date-${index}" data-plan-input="${prefix}" data-kind="date" data-index="${index}" type="date" min="${zonedDay(prefix === "draft" ? draftTimeZone() : current()?.timeZone || "Asia/Shanghai")}" value="${esc(slot.date)}"></div><div><label class="label" for="${prefix}-time-${index}">时间</label><input id="${prefix}-time-${index}" data-plan-input="${prefix}" data-kind="time" data-index="${index}" type="time" value="${esc(slot.time)}"></div></div>${plan.timeOptions.length>1?`<button class="text-btn candidate-remove" data-action="${prefix}-remove-time" data-index="${index}" aria-label="移除候选时间 ${index+1}">移除</button>`:""}</div>`).join("")}</div>${plan.timeOptions.length<3?`<button class="text-btn candidate-add" data-action="${prefix}-add-time">＋ 再留一个时间</button>`:""}`;
 }
 function placeFields(plan,prefix) {
   return `<div class="candidate-list">${plan.placeOptions.map((place,index)=>`<div class="candidate-row"><label class="label" for="${prefix}-place-${index}">见面地点${plan.placeOptions.length>1?` ${index+1}`:""}</label><input id="${prefix}-place-${index}" data-plan-input="${prefix}" data-kind="place" data-index="${index}" maxlength="60" value="${esc(place)}" placeholder="店名、地址或好找的集合点">${plan.placeOptions.length>1?`<button class="text-btn candidate-remove" data-action="${prefix}-remove-place" data-index="${index}" aria-label="移除候选地点 ${index+1}">移除</button>`:""}</div>`).join("")}</div>${plan.placeOptions.length<3?`<button class="text-btn candidate-add" data-action="${prefix}-add-place">＋ 再留一个地点</button>`:""}`;
@@ -279,29 +295,29 @@ function render() {
   document.body.dataset.audience = guestToken ? "guest" : "host";
   document.title = guestToken ? "有一份只给你的邀请 · 见一面" : "见一面 · Date Me Maybe";
   const brand = `<span class="brand-mark">${icon("heart", 21)}</span>见一面`;
-  const header = `<header class="site-header">${guestToken ? `<span class="brand">${brand}</span>` : `<button class="brand" data-action="home" aria-label="见一面首页">${brand}</button><nav class="nav" aria-label="主导航"><button class="${view === "create" || view === "ready" ? "active" : ""}" data-action="home">制作邀请</button><button class="${view === "list" || view === "host" ? "active" : ""}" data-action="list">我的邀约${sessionUser && invitations.length ? ` · ${invitations.length}` : ""}</button>${sessionUser ? `<button class="account-nav" data-action="logout" title="${esc(sessionUser.email || sessionUser.name)}">退出登录</button>` : '<button class="account-nav" data-action="login">登录</button>'}</nav>`}</header>`;
+  const header = `<header class="site-header">${guestToken ? `<span class="brand">${brand}</span>` : `<button class="brand" data-action="home" aria-label="见一面首页">${brand}</button><nav class="nav" aria-label="主导航"><button class="${view === "create" || view === "ready" ? "active" : ""}" data-action="home">制作邀请</button><button class="${view === "list" || view === "host" ? "active" : ""}" data-action="list">我的邀约${sessionUser && invitations.length ? ` · ${invitations.length}` : ""}</button><button class="${view === "schedule" ? "active" : ""}" data-action="schedule">我的日程</button>${sessionUser ? `<button class="account-nav" data-action="logout" title="${esc(sessionUser.email || sessionUser.name)}">退出登录</button>` : '<button class="account-nav" data-action="login">登录</button>'}</nav>`}</header>`;
   const content = booting
     ? '<section class="loading-state" role="status"><span class="loading-heart">♡</span><p>正在打开这份小心意…</p></section>'
     : bootError
       ? `<section class="loading-state"><span class="loading-heart">♡</span><h2>还没能打开。</h2><p class="sub">${esc(bootError)}</p><button class="btn primary" data-action="retry-boot">再试一次</button></section>`
-      : view === "account" ? accountView() : view === "create" ? editor() : view === "ready" ? readyView() : view === "list" ? listView() : view === "host" ? hostView() : guestView();
+      : view === "account" ? accountView() : view === "schedule" ? calendarView() : view === "create" ? editor() : view === "ready" ? readyView() : view === "list" ? listView() : view === "host" ? hostView() : guestView();
   $("#root").innerHTML = `${header}<main>${content}</main><footer class="footer"><span>见一面 · 先从一次小小的邀请开始</span><span>认真邀请，轻松回应。</span></footer><div id="modal-root"></div><div id="toast-root" role="status" aria-live="polite"></div>`;
   bind();
   if (modal) renderModal();
 }
 
 function editor() {
-  return `<div class="workbench"><section class="editor"><p class="eyebrow">FOR SOMEONE SPECIAL</p><h1>有点想见你。<br>那就，认真约一次。</h1><p class="sub" style="margin-top:10px">把没说出口的话，变成一份小邀请。</p><div class="steps">${creationSteps().map((s, i) => `${i ? '<span class="step-line"></span>' : ""}<div class="step ${step === i ? "active" : step > i ? "done" : ""}"><i>${step > i ? "✓" : i + 1}</i>${s}</div>`).join("")}</div><div class="form-section">${step === 0 ? firstStep() : draft.mode === "host" && step === 1 ? arrangementStep() : invitationReview()}</div></section><aside class="preview-column" aria-label="邀请实时预览"><div class="preview-label"><span>对方会收到这样一份邀请</span><span class="live-label">实时预览</span></div><div class="stage" id="live-preview">${invitationCard(draft)}</div><p class="preview-note">只要真诚一点，就已经很可爱了。</p></aside></div>`;
+  return `<div class="workbench"><section class="editor"><p class="eyebrow">FOR SOMEONE SPECIAL</p><h1>有点想见你。<br>那就，认真约一次。</h1><p class="sub" style="margin-top:10px">把没说出口的话，变成一份小邀请。</p><div class="steps">${creationSteps().map((s, i) => `${i ? '<span class="step-line"></span>' : ""}<div class="step ${step === i ? "active" : step > i ? "done" : ""}"><i>${step > i ? "✓" : i + 1}</i>${s}</div>`).join("")}</div><div class="form-section">${step === 0 ? firstStep() : step === 1 ? (draft.mode === "host" ? arrangementStep() : timingStep()) : invitationReview()}</div></section><aside class="preview-column" aria-label="邀请实时预览"><div class="preview-label"><span>对方会收到这样一份邀请</span><span class="live-label">实时预览</span></div><div class="stage" id="live-preview">${invitationCard(draft)}</div><p class="preview-note">只要真诚一点，就已经很可爱了。</p></aside></div>`;
 }
 function firstStep() {
-  return `<div class="field"><div class="label">这次，想怎么邀请？</div><div class="invitation-modes">${[["host","我来安排","先准备好小安排，让 TA 从中选"],["open","想听 TA 的","让 TA 说说心愿，最后我来敲定"]].map(([mode,title,note])=>`<button class="mode-choice ${draft.mode===mode?"selected":""}" data-action="creation-mode" data-mode="${mode}" aria-pressed="${draft.mode===mode}"><b>${title}</b><small>${note}</small></button>`).join("")}</div></div><div class="columns"><div class="field"><label class="label" for="from">你的昵称</label><input id="from" data-field="from" maxlength="16" value="${esc(draft.from)}" placeholder="对方怎么称呼你"></div><div class="field"><label class="label" for="to">想邀请谁</label><input id="to" data-field="to" maxlength="16" value="${esc(draft.to)}" placeholder="TA 的昵称"></div></div><div class="field"><div class="label">选一种开场语气 <small>文案可以自己改</small></div><div class="tone-group">${tones.map((t) => `<button class="tone ${draft.tone === t[0] ? "selected" : ""}" data-action="tone" data-tone="${t[0]}" aria-pressed="${draft.tone === t[0]}">${t[1]}</button>`).join("")}</div></div><div class="field"><label class="label" for="message">想对 TA 说的话 <small id="word-count">${draft.message.length}/120</small></label><textarea id="message" data-field="message" maxlength="120">${esc(draft.message)}</textarea><p class="hint">换上你们的昵称，再写一句只有 TA 能懂的话。</p></div><div id="form-error" class="error" role="alert"></div><div class="actions"><button class="btn primary" data-action="next">${draft.mode === "host" ? "准备一点小安排" : "看看这份邀请"} ${icon("arrow")}</button></div>`;
+  return `<div class="field"><div class="label">这次，想怎么邀请？</div><div class="invitation-modes">${[["host","我来安排","先准备好小安排，让 TA 从中选"],["open","想听 TA 的","让 TA 说说心愿，最后我来敲定"]].map(([mode,title,note])=>`<button class="mode-choice ${draft.mode===mode?"selected":""}" data-action="creation-mode" data-mode="${mode}" aria-pressed="${draft.mode===mode}"><b>${title}</b><small>${note}</small></button>`).join("")}</div></div><div class="columns"><div class="field"><label class="label" for="from">你的昵称</label><input id="from" data-field="from" maxlength="16" value="${esc(draft.from)}" placeholder="对方怎么称呼你"></div><div class="field"><label class="label" for="to">想邀请谁</label><input id="to" data-field="to" maxlength="16" value="${esc(draft.to)}" placeholder="TA 的昵称"></div></div><div class="field"><div class="label">选一种开场语气 <small>文案可以自己改</small></div><div class="tone-group">${tones.map((t) => `<button class="tone ${draft.tone === t[0] ? "selected" : ""}" data-action="tone" data-tone="${t[0]}" aria-pressed="${draft.tone === t[0]}">${t[1]}</button>`).join("")}</div></div><div class="field"><label class="label" for="message">想对 TA 说的话 <small id="word-count">${draft.message.length}/120</small></label><textarea id="message" data-field="message" maxlength="120">${esc(draft.message)}</textarea><p class="hint">换上你们的昵称，再写一句只有 TA 能懂的话。</p></div><div id="form-error" class="error" role="alert"></div><div class="actions"><button class="btn primary" data-action="next">${draft.mode === "host" ? "准备一点小安排" : "留一点见面的时间"} ${icon("arrow")}</button></div>`;
 }
 function arrangementStep() {
   const plan=draft.plan;
-  return `<h2>把想见你的心意，安排好。</h2><p class="sub">每项可以留一个答案，也可以留几个小提议，让 TA 来选。</p><div class="field"><h3>什么时候见</h3>${timeFields(plan,"draft")}</div><div class="field"><h3>在哪里见</h3>${placeFields(plan,"draft")}</div><div class="field"><h3>想一起做什么</h3><div class="scene-activities">${activities.map(([activity,symbol])=>`<button class="scene-activity ${plan.activities.includes(activity)?"selected":""}" data-action="draft-activity" data-activity="${activity}" aria-pressed="${plan.activities.includes(activity)}">${icon(symbol,22)}<span>${activity}</span><i class="multi-check">${plan.activities.includes(activity)?"✓":""}</i></button>`).join("")}</div></div>${plan.activities.map(activity=>`<div class="field"><h3>${esc(activity)} · 小偏好</h3><p class="hint">喜欢的都可以留给 TA 选，不选也没关系。</p><div class="scene-hints">${sceneDetails[activity].items.map(([emoji,detail],index)=>`<button class="hint-choice ${detailChoices(plan.preferences.details[activity]).includes(detail)?"selected":""}" data-action="draft-detail" data-activity="${activity}" data-index="${index}" aria-pressed="${detailChoices(plan.preferences.details[activity]).includes(detail)}"><span>${emoji} ${detail}</span><span class="hint-check">${detailChoices(plan.preferences.details[activity]).includes(detail)?"✓":"+"}</span></button>`).join("")}</div></div>`).join("")}<div id="form-error" class="error" role="alert"></div><div class="actions"><button class="text-btn" data-action="prev">回去改改</button><button class="btn primary" data-action="next">看看这份邀请 ${icon("arrow")}</button></div>`;
+  return `<h2>把想见你的心意，安排好。</h2><p class="sub">每项可以留一个答案，也可以留几个小提议，让 TA 来选。</p><div class="field"><h3>什么时候见</h3>${timeFields(plan,"draft")}</div>${durationField("draft",draft.durationMinutes)}<div class="field"><h3>在哪里见</h3>${placeFields(plan,"draft")}</div><div class="field"><h3>想一起做什么</h3><div class="scene-activities">${activities.map(([activity,symbol])=>`<button class="scene-activity ${plan.activities.includes(activity)?"selected":""}" data-action="draft-activity" data-activity="${activity}" aria-pressed="${plan.activities.includes(activity)}">${icon(symbol,22)}<span>${activity}</span><i class="multi-check">${plan.activities.includes(activity)?"✓":""}</i></button>`).join("")}</div></div>${plan.activities.map(activity=>`<div class="field"><h3>${esc(activity)} · 小偏好</h3><p class="hint">喜欢的都可以留给 TA 选，不选也没关系。</p><div class="scene-hints">${sceneDetails[activity].items.map(([emoji,detail],index)=>`<button class="hint-choice ${detailChoices(plan.preferences.details[activity]).includes(detail)?"selected":""}" data-action="draft-detail" data-activity="${activity}" data-index="${index}" aria-pressed="${detailChoices(plan.preferences.details[activity]).includes(detail)}"><span>${emoji} ${detail}</span><span class="hint-check">${detailChoices(plan.preferences.details[activity]).includes(detail)?"✓":"+"}</span></button>`).join("")}</div></div>`).join("")}<div id="form-error" class="error" role="alert"></div><div class="actions"><button class="text-btn" data-action="prev">回去改改</button><button class="btn primary" data-action="next">看看这份邀请 ${icon("arrow")}</button></div>`;
 }
 function invitationReview() {
-  return `<h2>这一份，只想发给 ${esc(draft.to)}。</h2><p class="sub">${draft.mode==="host"?"小安排准备好了，等 TA 来选喜欢的。":"心意先到，见面的安排想听听 TA 的。"}</p><div class="summary-lines"><div class="summary-line"><span>邀请对象</span><b>${esc(draft.from)} → ${esc(draft.to)}</b></div><div class="summary-line"><span>想对 TA 说</span><span class="review-message">${esc(draft.message)}</span></div></div>${draft.mode==="host"?planRows(draft):'<div class="note-box">让 TA 留下方便的时间、想去的地方和愿意一起做的事。等心意回来，你再敲定这次见面。</div>'}<div id="form-error" class="error" role="alert"></div><div class="actions"><button class="text-btn" data-action="prev">回去改改</button><button class="btn primary" data-action="create">把邀请准备好 ${icon("heart")}</button></div>`;
+  return `<h2>这一份，只想发给 ${esc(draft.to)}。</h2><p class="sub">${draft.mode==="host"?"小安排准备好了，等 TA 来选喜欢的。":"心意先到，见面的安排想听听 TA 的。"}</p><div class="summary-lines"><div class="summary-line"><span>邀请对象</span><b>${esc(draft.from)} → ${esc(draft.to)}</b></div><div class="summary-line"><span>想对 TA 说</span><span class="review-message">${esc(draft.message)}</span></div></div>${draft.mode==="host"?planRows(draft):'<div class="note-box">让 TA 留下方便的时间、想去的地方和愿意一起做的事。等心意回来，你再敲定这次见面。</div>'}<div class="summary-lines"><div class="summary-line"><span>预计相处</span><b>${durationLabel(draft.durationMinutes)}</b></div>${draft.mode==="open"?`<div class="summary-line"><span>怎么选时间</span><b>${draft.timePolicy==="schedule"?"从我的空闲时间里选":"时间交给 TA 来定"}</b></div>`:""}</div><div id="form-error" class="error" role="alert"></div><div class="actions"><button class="text-btn" data-action="prev">回去改改</button><button class="btn primary" data-action="create">把邀请准备好 ${icon("heart")}</button></div>`;
 }
 function shareControls(x) {
   return `<div class="share-box"><label class="label" for="share-link">发给 ${esc(x.to)} 的专属链接</label><input id="share-link" value="${esc(x.shareUrl || "")}" readonly aria-label="邀请分享链接"><div class="actions"><button class="btn primary" data-action="copy-link">${icon("copy")}复制邀请链接</button><a class="btn" href="${esc(x.shareUrl || "#")}" target="_blank" rel="noopener noreferrer">打开这份邀请 ${icon("arrow")}</a></div><p class="hint">把链接发给 TA，回来看看有没有收到心动的回应。</p></div>`;
@@ -322,13 +338,14 @@ function guestView() {
   if (!x) return '<div class="empty">这份邀请暂时无法打开。</div>';
   return view === "guest"
     ? journeyView(x)
-    : `${switchHeader()}<div class="recipient-area">${resultCard(x, true)}${x.responded ? '<div class="recipient-create"><p>也有一个，想认真邀请的人？</p><a class="btn" href="/?create=new">我也要发起邀约 ♡</a></div>' : ""}</div>`;
+    : `${switchHeader()}<div class="recipient-area">${resultCard(x, true)}${bindingEntry(x)}${x.responded ? '<div class="recipient-create"><p>也有一个，想认真邀请的人？</p><a class="btn" href="/?create=new">我也要发起邀约 ♡</a></div>' : ""}</div>`;
 }
 function resultCard(x, buttons = false) {
   const s = InviteModel.status(x),
     p = x.proposal;
   const titles = {
     confirmed: "那就说好啦，<br>到时候见。",
+    cancelled: "这次约定，<br>先收起来了。",
     details: "愿意见面，<br>已经很开心了。",
     host_review: "你的心意，<br>也被认真收到了。",
     guest_review: "有一个新安排，<br>想和你确认。",
@@ -337,6 +354,7 @@ function resultCard(x, buttons = false) {
   };
   const notes = {
     confirmed: "这一次的时间、地点和小安排，我们都说好了。",
+    cancelled: "原来留出的时间已空出来。期待下次合适的相见。",
     details: "还差一个见面地点，一起补上吧。",
     host_review: proposalActivities(p).length && (!p.activity || (InviteModel.isFullRange(p) && !InviteModel.complete(p)))
       ? (role === "host" ? "TA 的时间、地点和小心思都在这里，挑一个最合心意的安排吧。" : "这些都是你愿意的小安排，等 TA 敲定这次见面。")
@@ -345,11 +363,11 @@ function resultCard(x, buttons = false) {
     declined: "这次邀请就到这里。愿我们都轻松一点。",
     waiting: "不着急，给对方一点时间。",
   };
-  return `<article class="invitation-card result-card"><div class="card-top"><span>OUR LITTLE PROMISE</span><span class="mini-heart">♡</span></div>${mascot()}${statusBadge(x)}<h2 class="result-title">${titles[s]}</h2><p class="result-note">${notes[s]}</p>${s !== "declined" ? (p ? ticket(x) : planRows(x)) : ""}${buttons ? resultActions(x) : ""}<div class="ticket-note">${esc(x.from)} & ${esc(x.to)}<br>见面这件小事，我们认真一点。</div></article>`;
+  return `<article class="invitation-card result-card"><div class="card-top"><span>OUR LITTLE PROMISE</span><span class="mini-heart">♡</span></div>${mascot()}${statusBadge(x)}<h2 class="result-title">${titles[s]}</h2><p class="result-note">${notes[s]}</p>${s !== "declined" ? (p ? ticket(x) : planRows(x)) : ""}${retainedBookingNote(x)}${buttons ? resultActions(x) : ""}<div class="ticket-note">${esc(x.from)} & ${esc(x.to)}<br>见面这件小事，我们认真一点。</div></article>`;
 }
 function ticket(x) {
   const p=x.proposal,summary=activitySummary(x),times=planTimes(p),places=planPlaces(p);
-  return `<div class="ticket"><div class="ticket-detail"><small>${p.date?"见面时间":"这些时间都可以"}</small>${times.map(slot=>`<b class="activity-summary-item">${esc(timeLabel(slot))}</b>`).join("")}</div><div class="ticket-detail"><small>${summary.label}</small>${summary.values.map(value=>`<b class="activity-summary-item">${esc(value)}</b>`).join("")}${summary.pendingRange?'<p class="hint">把这次的时间、地点和小安排敲定，再说好见面。</p>':""}</div><div class="ticket-detail"><small>${p.place?"MEET HERE":"这些地方都想去"}</small><b data-plan-place>${places.map(esc).join("<br>")||"还需要填写见面地点"}</b></div>${preferenceRows(p)}</div>`;
+  return `<div class="ticket"><div class="ticket-detail"><small>${p.date?"见面时间":"这些时间都可以"}</small>${times.map(slot=>`<b class="activity-summary-item">${esc(timeLabel(slot))}</b>`).join("")}<p class="hint">${esc(x.timeZone || "Asia/Shanghai")} · 预计 ${durationLabel(x.durationMinutes)}</p></div><div class="ticket-detail"><small>${summary.label}</small>${summary.values.map(value=>`<b class="activity-summary-item">${esc(value)}</b>`).join("")}${summary.pendingRange?'<p class="hint">把这次的时间、地点和小安排敲定，再说好见面。</p>':""}</div><div class="ticket-detail"><small>${p.place?"MEET HERE":"这些地方都想去"}</small><b data-plan-place>${places.map(esc).join("<br>")||"还需要填写见面地点"}</b></div>${preferenceRows(p)}</div>`;
 }
 function resultActions(x) {
   const s=InviteModel.status(x),p=x.proposal,range=proposalActivities(p),full=InviteModel.isFullRange(p);
@@ -357,7 +375,9 @@ function resultActions(x) {
   const fullFinalize=full&&review&&role!==InviteModel.scopeOwner(x)&&!InviteModel.complete(p);
   const legacyFinalize=!full&&role==="host"&&s==="host_review"&&range.length>0&&!p.activity;
   const canConfirm=review&&!fullFinalize&&!legacyFinalize&&!!p?.activity;
-  return `${fullFinalize?fullChoiceFields(x):legacyFinalize?hostActivityChoices(x):""}<div class="response-actions">${fullFinalize||legacyFinalize?`<button class="btn primary wide" data-action="finalize" ${(fullFinalize?!selectionComplete(p,selectedArrangement(x)):!selectedHostActivity(x))?"disabled":""}>就这样，说好啦 ${icon("check")}</button>`:canConfirm?`<button class="btn primary wide" data-action="confirm">这个安排可以，确认 ${icon("check")}</button>`:""}${s==="confirmed"?`<button class="btn primary wide" data-action="save-card">保存约定卡 ${icon("download")}</button>`:["host_review","guest_review","details"].includes(s)?`<button class="btn wide" data-action="save-card">保存这份小心意 ${icon("download")}</button>`:""}${s==="confirmed"?'<button class="text-btn" data-action="change">需要改期或换个地点</button>':s==="details"&&!full?'<button class="btn primary wide" data-action="change">一起把地点定下来</button>':""}</div>`;
+  const stale = p && planTimes(p).some(slot => !slotAvailable(slot, x));
+  const canReviseCandidates = full && (x.responded || x.mode === "host") && !["confirmed", "cancelled", "declined"].includes(s) && role === InviteModel.scopeOwner(x);
+  return `${fullFinalize?fullChoiceFields(x):legacyFinalize?hostActivityChoices(x):""}${stale && !["confirmed", "cancelled"].includes(s) ? `<div class="note-box">有些候选时间已经有了安排。${canReviseCandidates ? "再留几个方便的时间给 TA 吧。" : "可以挑选其他时间；如果都不合适，让 TA 更新一下候选时间吧。"}<button class="text-btn" data-action="availability-refresh">刷新空闲时间</button></div>` : ""}<div class="response-actions">${fullFinalize||legacyFinalize?`<button class="btn primary wide" data-action="finalize" ${(fullFinalize?!selectionComplete(p,selectedArrangement(x)):!selectedHostActivity(x)||!slotAvailable(p))?"disabled":""}>就这样，说好啦 ${icon("check")}</button>`:canConfirm?`<button class="btn primary wide" data-action="confirm" ${slotAvailable(p,x)?"":"disabled"}>这个安排可以，确认 ${icon("check")}</button>`:""}${s==="confirmed"?`<button class="btn primary wide" data-action="save-card">保存约定卡 ${icon("download")}</button>`:["host_review","guest_review","details"].includes(s)?`<button class="btn wide" data-action="save-card">保存这份小心意 ${icon("download")}</button>`:""}${s==="confirmed"?'<button class="text-btn" data-action="change">需要改期或换个地点</button>':canReviseCandidates?'<button class="text-btn" data-action="change-candidates">更新我方便的时间</button>':s==="details"&&!full?'<button class="btn primary wide" data-action="change">一起把地点定下来</button>':""}${x.responded && !["cancelled", "declined"].includes(s) ? '<button class="text-btn calendar-cancel" data-action="cancel-invitation">取消这次约定</button>' : ""}</div>`;
 }
 function hostView() {
   const x = current();
@@ -369,9 +389,10 @@ function hostView() {
     guest_review: "新安排准备好了，<br>等对方再确认。",
     details: "我们愿意见面，<br>再把地点定下来。",
     confirmed: "这次见面，<br>终于有了具体模样。",
+    cancelled: "这次约定，<br>先收起来了。",
     declined: "收到了 TA 的回复，<br>这次就先到这里。",
   };
-  return `${switchHeader()}<div class="host-layout"><section class="host-copy">${statusBadge(x)}<h1>${titles[s]}</h1><p class="sub">${s === "waiting" ? "把专属链接发给 TA，再回来看看心意有没有回音。" : s === "confirmed" ? "时间、地点和心意，都在这张小约定里。" : s === "declined" ? "回应已经保存。感谢对方的坦诚，也照顾好自己的心情。" : "把时间和地点一起说好，就等见面啦。"}</p>${x.proposal && s !== "declined" ? proposalSummaryRows(x) : ""}${resultActions(x)}${shareControls(x)}<p class="hint">${s === "confirmed" ? "小约定收好啦，见面的期待也留好了。" : s === "host_review" ? "TA 的小心思都在这里，看看是不是正合你意。" : s === "waiting" ? "有新回应时，这里就会告诉你。" : "想看看有没有新消息，点一下「刷新回应」就好。"}</p></section>${resultCard(x)}</div>`;
+  return `${switchHeader()}<div class="host-layout"><section class="host-copy">${statusBadge(x)}<h1>${titles[s]}</h1><p class="sub">${s === "waiting" ? "把专属链接发给 TA，再回来看看心意有没有回音。" : s === "confirmed" ? "时间、地点和心意，都在这张小约定里。" : s === "declined" ? "回应已经保存。感谢对方的坦诚，也照顾好自己的心情。" : "把时间和地点一起说好，就等见面啦。"}</p>${x.proposal && s !== "declined" ? proposalSummaryRows(x) : ""}${retainedBookingNote(x)}${resultActions(x)}${s === "cancelled" ? "" : shareControls(x)}<p class="hint">${s === "confirmed" ? "小约定收好啦，见面的期待也留好了。" : s === "host_review" ? "TA 的小心思都在这里，看看是不是正合你意。" : s === "waiting" ? "有新回应时，这里就会告诉你。" : "想看看有没有新消息，点一下「刷新回应」就好。"}</p></section>${resultCard(x)}</div>`;
 }
 function listView() {
   return `<section class="list-wrap"><div class="list-head"><div><p class="eyebrow">MY LITTLE INVITATIONS</p><h1>我的邀约</h1></div><div class="list-head-actions"><button class="text-btn" data-action="refresh">刷新</button><button class="btn primary" data-action="new">＋ 再写一份</button></div></div>${
@@ -394,6 +415,8 @@ function listView() {
 function bind() {
   if (view === "create") bindPlanInputs("draft",draft.plan,()=>{saveCreationDraft();updatePreview();});
   if (view === "account") bindAccount();
+  if (view === "schedule") bindCalendar();
+  $("#draft-duration")?.addEventListener("change", event => { draft.durationMinutes = Number(event.target.value); saveCreationDraft(); updatePreview(); });
   if (view === "guest") bindJourneyInputs();
   document
     .querySelectorAll("[data-action]")
@@ -419,6 +442,7 @@ function validateStep(all = false) {
   if (!draft.from.trim() || !draft.to.trim()) return "先填一下你和 TA 的昵称吧。";
   if (!draft.message.trim()) return "写一句想对 TA 说的话吧。";
   if(draft.mode === "host" && (all || step > 0)) return validatePlan(draft.plan);
+  if(draft.mode === "open" && draft.timePolicy === "schedule" && (all || step > 0) && !calendarData?.schedule?.configured) return "先设置并保存你的时间表，再把邀请发给 TA 吧。";
   return "";
 }
 async function updateRecord(event) {
@@ -431,11 +455,8 @@ async function updateRecord(event) {
   } catch (error) {
     if (error.status === 409) {
       await refreshCurrent();
-      disposeCardExport(modal);
-      modal = null;
+      if (error.code === "STALE_VERSION") { disposeCardExport(modal); modal = null; }
       render();
-      error.message = "安排刚刚有更新，已经帮你换成新的了。看看，再说好吧。";
-      error.userSafe = true;
     }
     throw error;
   }
@@ -449,10 +470,11 @@ async function action(a, el) {
     if (a === "retry-boot") { await boot(); return; }
     if (a.startsWith("journey-")) { await journeyAction(a, el); return; }
     if (["home","new","open","host","list","login"].includes(a) && modal) closeModal();
-    if (!guestToken && await accountAction(a)) {
+    if (await accountAction(a)) {
       render();
       return;
     }
+    if (await calendarAction(a, el)) return;
     if (a === "home") {
       if (guestToken) { location.assign("/"); return; }
       view = "create";
@@ -499,7 +521,8 @@ async function action(a, el) {
       const cleanDraft = {
         from: draft.from.trim(), to: draft.to.trim(), tone: draft.tone,
         message: draft.message.trim(), mode: draft.mode,
-        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Shanghai",
+        timeZone: draftTimeZone(),
+        durationMinutes: draft.durationMinutes, timePolicy: draft.mode === "host" ? "free" : draft.timePolicy,
       };
       if (draft.mode === "host") cleanDraft.plan=cleanPlan(draft.plan);
       const result = await InviteAPI.mutate("/api/invitations", { draft: cleanDraft });
@@ -532,6 +555,7 @@ async function action(a, el) {
       selectedHostActivity(x);
       hostActivitySelection.activity = el.dataset.activity;
     } else if (a === "plan-choice") {
+      if (el.dataset.field === "time" && !slotAvailable(current().proposal.timeOptions[Number(el.dataset.index)])) return;
       selectArrangement(selectedArrangement(current()),current().proposal,el.dataset.field,el.dataset.index);
     } else if (a === "finalize") {
       if(InviteModel.isFullRange(current().proposal)) {
@@ -543,20 +567,30 @@ async function action(a, el) {
         if(!activity) throw InviteAPI.userError("先挑一个这次想一起做的事吧。");
         await updateRecord({type:"finalize",proposal:{activity}});
       }
+      await loadAvailability();
       celebrate();
     } else if (a === "confirm") {
       await updateRecord({ type: "confirm" });
+      await loadAvailability();
       celebrate();
-    } else if (a === "change") {
-      if (InviteModel.status(current()) !== "confirmed" && !(InviteModel.status(current()) === "details" && !InviteModel.isFullRange(current().proposal))) return;
-      modal = { type: "proposal", version: current().version, activity: role === "host" ? selectedHostActivity(current()) : current().proposal?.activity || "" };
+    } else if (a === "change" || a === "change-candidates") {
+      const x = current(), pendingRange = a === "change-candidates" && (x.responded || x.mode === "host") && role === InviteModel.scopeOwner(x) && !["confirmed", "cancelled"].includes(InviteModel.status(x));
+      if (!pendingRange && InviteModel.status(x) !== "confirmed" && !(InviteModel.status(x) === "details" && !InviteModel.isFullRange(x.proposal))) return;
+      await loadAvailability();
+      modal = { type: "proposal", version: x.version, rangeTime: pendingRange, plan: { timeOptions: planTimes(x.proposal).map(slot => ({...slot})) }, slot: x.proposal?.date ? {date:x.proposal.date,time:x.proposal.time} : null, place: x.proposal?.place || "", activity: role === "host" ? selectedHostActivity(x) : x.proposal?.activity || "" };
       renderModal();
       return;
     } else if (a === "close-modal") { closeModal(); return; }
     else if (a === "submit-proposal") {
-      const date = $("#proposal-date").value, time = $("#proposal-time").value,
+      if (modal.rangeTime) {
+        const slots = modal.plan.timeOptions;
+        if (!slots.length || slots.some(slot => !slot.date || !slot.time || !futureSlot(slot) || (current().timePolicy === "schedule" && !slotAvailable(slot)))) { $("#proposal-error").textContent = "留一到三个还可以见面的时间吧。"; return; }
+        await updateRecord({ type: "propose", version: modal.version, proposal: {timeOptions:slots} });
+        closeModal(); view = guestToken ? "result" : "host"; render(); return;
+      }
+      const date = current().timePolicy === "schedule" ? modal.slot?.date : $("#proposal-date").value, time = current().timePolicy === "schedule" ? modal.slot?.time : $("#proposal-time").value,
         place = $("#proposal-place").value.trim();
-      if (!date || !time || new Date(`${date}T${time}`) <= new Date()) {
+      if (!date || !time || !futureSlot({date,time})) {
         $("#proposal-error").textContent = "请选一个完整、还没到来的时间。";
         return;
       }
@@ -572,6 +606,8 @@ async function action(a, el) {
       await updateRecord({ type: "propose", version: modal.version, proposal });
       closeModal();
       view = guestToken ? "result" : "host";
+    } else if (a.startsWith("proposal-range-")) {
+      editPlanCandidates(modal.plan, a.slice(15), Number(el.dataset.index)); renderModal(); return;
     } else if (a === "copy-link") {
       try {
         await navigator.clipboard.writeText(current().shareUrl);
@@ -587,7 +623,7 @@ async function action(a, el) {
     if (!["tone", "host-activity", "plan-choice", "creation-mode"].includes(a) && !a.startsWith("draft-")) window.scrollTo({ top: 0, behavior: "instant" });
   } catch (error) {
     if (error.status === 401 && !guestToken) {
-      const intent = view === "create" ? "create" : "list";
+      const intent = view === "create" ? "create" : view === "schedule" ? "schedule" : "list";
       resetSenderIdentity();
       requireAccount(intent);
       render();
@@ -606,13 +642,14 @@ async function action(a, el) {
 // unfinished scene remain untouched by background updates.
 setInterval(async () => {
   if (booting || bootError || actionBusy || modal || document.hidden || !["host", "list", "result"].includes(view)) return;
-  const before = JSON.stringify(invitations), epoch = stateEpoch, readingView = view;
+  const before = JSON.stringify(invitations), beforeAvailability = JSON.stringify(availabilityData), epoch = stateEpoch, readingView = view;
   try {
     const result = await InviteAPI.get(view === "list" ? "/api/invitations" : invitationEndpoint());
+    const available = readingView === "list" ? null : await InviteAPI.get(invitationEndpoint() + "/availability");
     if (epoch !== stateEpoch || readingView !== view || modal || actionBusy) return;
     if (view === "list") invitations = result.invitations;
-    else mergeInvitation(result.invitation);
-    if (before !== JSON.stringify(invitations)) render();
+    else { mergeInvitation(result.invitation); availabilityData = available; availabilityInvitationId = result.invitation.id; }
+    if (before !== JSON.stringify(invitations) || beforeAvailability !== JSON.stringify(availabilityData)) render();
   } catch { /* Explicit refresh provides a visible retry without interrupting reading. */ }
 }, 15000);
 let toastTimer;
@@ -641,16 +678,22 @@ function renderModal() {
   const x = current();
   priorFocus = document.activeElement;
   if (modal.type === "card") { renderCardModal(); return; }
-  const p = x.proposal || { ...x.options?.[0], place: x.place || "" };
-  $("#modal-root").innerHTML =
-    `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div class="modal-head"><h2 id="modal-title">换个舒服的安排。</h2><button class="close" data-action="close-modal" aria-label="关闭">×</button></div><p>${InviteModel.status(x) === "confirmed" ? "换了时间或地点，再和 TA 说好一次。" : "把你方便的时间和地点告诉对方，等 TA 确认。"}</p><div class="columns"><div class="field"><label class="label" for="proposal-date">日期</label><input id="proposal-date" type="date" min="${dateString(new Date())}" value="${esc(p.date)}"></div><div class="field"><label class="label" for="proposal-time">时间</label><input id="proposal-time" type="time" value="${esc(p.time)}"></div></div><div class="field"><label class="label" for="proposal-place">见面地点</label><input id="proposal-place" maxlength="60" placeholder="具体在哪里碰面？" value="${esc(p.place)}"><p class="hint">留下一个好找的地方，见面时就不怕错过啦。</p></div>${role === "host" && proposalActivities(p).length && !p.activity ? `<fieldset class="modal-activity-choices"><legend>这次想一起做什么？</legend>${proposalActivities(p).map((activity, index) => `<label for="proposal-activity-${index}"><input id="proposal-activity-${index}" name="proposal-activity" type="radio" value="${esc(activity)}" ${modal.activity === activity ? "checked" : ""}><span>${esc(activity)}${activityDetail(p, activity) ? ` · ${esc(activityDetail(p, activity))}` : ""}</span></label>`).join("")}</fieldset>` : ""}<div class="error" id="proposal-error" role="alert"></div><button class="btn primary wide" data-action="submit-proposal">提议这个安排 ${icon("arrow")}</button></section></div>`;
-  $("#modal-root")
-    .querySelectorAll("[data-action]")
-    .forEach((el) =>
-      el.addEventListener("click", () => action(el.dataset.action, el)),
-    );
+  if (modal.type === "cancel") {
+    $("#modal-root").innerHTML = `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div class="modal-head"><h2 id="modal-title">取消这次约定？</h2><button class="close" data-action="close-modal" aria-label="关闭">×</button></div><p>取消后，原来留出的时间会空出来，对方打开邀请时也会看到更新。</p><div class="actions"><button class="btn" data-action="close-modal">再想想</button><button class="btn primary" data-action="confirm-cancel">确定取消</button></div></section></div>`;
+  } else {
+    const p = x.proposal || { ...x.options?.[0], place: x.place || "" };
+    const slot = modal.slot || {date:"",time:""};
+    const timeEditor = x.timePolicy === "schedule" ? availabilityPicker(modal.plan, modal.rangeTime ? "proposal-range" : "proposal") : modal.rangeTime ? timeFields(modal.plan, "proposal-range") : `<div class="columns"><div class="field"><label class="label" for="proposal-date">日期</label><input id="proposal-date" type="date" min="${zonedDay(x.timeZone || "Asia/Shanghai")}" value="${esc(slot.date)}"></div><div class="field"><label class="label" for="proposal-time">时间</label><input id="proposal-time" type="time" value="${esc(slot.time)}"></div></div>`;
+    $("#modal-root").innerHTML = `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div class="modal-head"><h2 id="modal-title">${modal.rangeTime ? "再留几个见面的时间。" : "换个舒服的安排。"}</h2><button class="close" data-action="close-modal" aria-label="关闭">×</button></div><p>${x.booking ? "新安排等双方说好，原来的时间先替你们留着。" : "把你方便的时间告诉对方，等 TA 再说好。"}</p>${timeEditor}${modal.rangeTime ? "" : `<div class="field"><label class="label" for="proposal-place">见面地点</label><input id="proposal-place" maxlength="60" placeholder="具体在哪里碰面？" value="${esc(modal.place)}"><p class="hint">留下一个好找的地方，见面时就不怕错过啦。</p></div>`}${!modal.rangeTime && role === "host" && proposalActivities(p).length && !p.activity ? `<fieldset class="modal-activity-choices"><legend>这次想一起做什么？</legend>${proposalActivities(p).map((activity, index) => `<label for="proposal-activity-${index}"><input id="proposal-activity-${index}" name="proposal-activity" type="radio" value="${esc(activity)}" ${modal.activity === activity ? "checked" : ""}><span>${esc(activity)}${activityDetail(p, activity) ? ` · ${esc(activityDetail(p, activity))}` : ""}</span></label>`).join("")}</fieldset>` : ""}<div class="error" id="proposal-error" role="alert"></div><button class="btn primary wide" data-action="submit-proposal">提议这个安排 ${icon("arrow")}</button></section></div>`;
+    if (modal.rangeTime && x.timePolicy !== "schedule") bindPlanInputs("proposal-range", modal.plan, () => {});
+    $("#proposal-place")?.addEventListener("input", event => { modal.place = event.target.value; });
+    for (const edge of ["date", "time"]) $("#proposal-" + edge)?.addEventListener("input", event => { modal.slot ||= {date:"",time:""}; modal.slot[edge] = event.target.value; });
+    document.querySelectorAll('[name="proposal-activity"]').forEach(input => input.addEventListener("change", () => { modal.activity = input.value; }));
+  }
+  $("#modal-root").querySelectorAll("[data-action]").forEach(el => el.addEventListener("click", () => action(el.dataset.action, el)));
   $("#modal-root").querySelector("input,button")?.focus();
 }
+
 function closeModal() {
   disposeCardExport(modal);
   modal = null;
@@ -662,7 +705,7 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") closeModal();
   if (e.key === "Tab") {
     const els = Array.from(
-      $("#modal-root").querySelectorAll("button,input,textarea,a[href]"),
+      $("#modal-root").querySelectorAll("button,input,select,textarea,a[href]"),
     ).filter((x) => !x.disabled);
     const first = els[0],
       last = els[els.length - 1];

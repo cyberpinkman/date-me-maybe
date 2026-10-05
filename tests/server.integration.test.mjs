@@ -110,6 +110,19 @@ function fails(response, status, message) {
   assert.equal(typeof response.body?.error?.message, 'string', `${message}: structured error message`);
 }
 
+async function updateFixtureState(pool, id, state) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query("SELECT set_config('opendater.calendar_writer', 'v1', true)");
+    await client.query('UPDATE invitations SET state=$1 WHERE id=$2', [state, id]);
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally { client.release(); }
+}
+
 function futureDate(days) {
   const date = new Date();
   date.setUTCDate(date.getUTCDate() + days);
@@ -169,6 +182,8 @@ test('PostgreSQL + HTTP: authentication, invitation ownership, guest capabilitie
   });
 
   const anonymous = clientFor(origin), a = clientFor(origin), c = clientFor(origin);
+  const runId = randomUUID();
+  const emailA = `a-${runId}@example.test`, emailC = `c-${runId}@example.test`;
   const b = clientFor(origin), d = clientFor(origin);
   const draftA = {
     from: 'A', to: 'B', tone: 'playful', message: '想认真约你见一面。', mode: 'fixed',
@@ -217,8 +232,13 @@ test('PostgreSQL + HTTP: authentication, invitation ownership, guest capabilitie
       return user;
     }
     // Two deliveries total; stay below the three-per-IP-per-minute mail limit.
-    userA = await signIn(a, 'a@example.test', true);
-    userC = await signIn(c, 'c@example.test');
+    userA = await signIn(a, emailA, true);
+    userC = await signIn(c, emailC);
+    t.after(async () => {
+      const cleanup = new Pool({ connectionString: databaseUrl });
+      try { await cleanup.query('DELETE FROM "user" WHERE id=ANY($1::text[])', [[userA.id, userC.id]]); }
+      finally { await cleanup.end(); }
+    });
     assert.notEqual(userA.id, userC.id);
     baselineA = succeeds(await a.get('/api/invitations'), 'A baseline list').invitations.map(invitation => invitation.id);
     baselineC = succeeds(await c.get('/api/invitations'), 'C baseline list').invitations.map(invitation => invitation.id);
@@ -401,7 +421,7 @@ test('PostgreSQL + HTTP: authentication, invitation ownership, guest capabilitie
   });
 
   await t.test('legacy invitations and persisted scalar details remain readable and can finalize into detail sets', async () => {
-    const legacy = succeeds(await c.post('/api/invitations', { draft: draftC, requestId: randomUUID() }), 'create legacy invitation').invitation;
+    const legacy = succeeds(await c.post('/api/invitations', { draft: { ...draftC, options: [{ date: futureDate(8), time: '18:30' }] }, requestId: randomUUID() }), 'create legacy invitation').invitation;
     const token = new URL(legacy.shareUrl).pathname.split('/').at(-1);
     const response = succeeds(await d.post(`${guestPath(token)}/actions`, {
       type: 'respond', version: legacy.version, requestId: randomUUID(),
@@ -418,7 +438,7 @@ test('PostgreSQL + HTTP: authentication, invitation ownership, guest capabilitie
     // this new fixture. Reading must remain compatible without a migration.
     const oldState = (await pool.query('SELECT state FROM invitations WHERE id=$1', [legacy.id])).rows[0].state;
     oldState.proposal.preferences.details['散个步'] = '沿着河边走';
-    await pool.query('UPDATE invitations SET state=$1 WHERE id=$2', [oldState, legacy.id]);
+    await updateFixtureState(pool, legacy.id, oldState);
     assert.equal((await getOwner(c, legacy.id)).proposal.preferences.details['散个步'], '沿着河边走');
     assert.equal(succeeds(await d.get(guestPath(token)), 'read persisted scalar as guest').invitation.proposal.preferences.details['散个步'], '沿着河边走');
     const finalize = { type: 'finalize', version: response.version, requestId: randomUUID(), proposal: { activity: '散个步' } };
@@ -533,6 +553,8 @@ test('PostgreSQL + HTTP: authentication, invitation ownership, guest capabilitie
       preferences: { hints: ['轻松随意就好'], details: { '吃点好吃的': ['日料', '火锅'], '喝杯咖啡': ['安静的小店', '有阳光的窗边'] } },
     };
     for (const mode of ['host', 'open']) {
+      const offset = mode === 'host' ? 0 : 5;
+      plan.timeOptions = [{ date: futureDate(10 + offset), time: '18:30' }, { date: futureDate(11 + offset), time: '20:00' }];
       const draft = { from: 'A', to: 'B', tone: 'playful', message: '一起敲定每一个小安排。', mode, timeZone: 'Asia/Shanghai', ...(mode === 'host' ? { plan } : {}) };
       const created = succeeds(await a.post('/api/invitations', { draft, requestId: randomUUID() }), `create ${mode} scope invitation`).invitation;
       const token = new URL(created.shareUrl).pathname.split('/').at(-1);
@@ -578,9 +600,9 @@ test('PostgreSQL + HTTP: authentication, invitation ownership, guest capabilitie
       assert.deepEqual(await chooser.client.post(chooser.path, action), finalResponse, 'Finalization replay returns its original complete snapshot');
 
       const rescheduled = succeeds(await a.post(hostActions, {
-        type: 'propose', version: final.version, requestId: randomUUID(), proposal: { date: futureDate(12), time: '19:15', place: '新集合点' },
+        type: 'propose', version: final.version, requestId: randomUUID(), proposal: { date: futureDate(12 + offset), time: '19:15', place: '新集合点' },
       }), 'An agreed plan may be rescheduled for fresh consent').invitation;
-      assert.deepEqual(rescheduled.proposal.timeOptions, [{ date: futureDate(12), time: '19:15' }]);
+      assert.deepEqual(rescheduled.proposal.timeOptions, [{ date: futureDate(12 + offset), time: '19:15' }]);
       assert.deepEqual(rescheduled.proposal.placeOptions, ['新集合点']);
       assert.equal(rescheduled.proposal.preferences.detail, '火锅');
       assert.deepEqual(rescheduled.approvals, { host: rescheduled.version, guest: null });
@@ -596,6 +618,7 @@ test('PostgreSQL + HTTP: authentication, invitation ownership, guest capabilitie
       preferences: { hints: [], details: { '散个步': [] } },
     };
     for (const mode of ['host', 'open']) {
+      unique.timeOptions = [{ date: futureDate(mode === 'host' ? 13 : 18), time: '18:30' }];
       const created = succeeds(await a.post('/api/invitations', { draft: { from: 'A', to: 'B', tone: 'playful', message: '这次就这样见吧。', mode, ...(mode === 'host' ? { plan: unique } : {}) }, requestId: randomUUID() }), 'create unique scope').invitation;
       const token = new URL(created.shareUrl).pathname.split('/').at(-1);
       const guestActions = `${guestPath(token)}/actions`, hostActions = `${ownerPath(created.id)}/actions`;
@@ -608,18 +631,96 @@ test('PostgreSQL + HTTP: authentication, invitation ownership, guest capabilitie
       assert.deepEqual(confirmed.approvals, { host: confirmed.version, guest: confirmed.version });
     }
 
-    const plan = { ...unique, timeOptions: [{ date: futureDate(13), time: '18:30' }, { date: futureDate(14), time: '20:00' }] };
+    const plan = { ...unique, timeOptions: [{ date: futureDate(19), time: '18:30' }, { date: futureDate(20), time: '20:00' }] };
     const created = succeeds(await a.post('/api/invitations', { draft: { from: 'A', to: 'B', tone: 'playful', message: '挑个仍方便的时间吧。', mode: 'host', plan }, requestId: randomUUID() }), 'create expiring candidate fixture').invitation;
     const token = new URL(created.shareUrl).pathname.split('/').at(-1);
     // Simulate time passing for one stored alternative, without changing the
     // public contract or any unrelated row in the isolated test database.
     const state = (await pool.query('SELECT state FROM invitations WHERE id=$1', [created.id])).rows[0].state;
     state.proposal.timeOptions[0].date = '2000-01-01';
-    await pool.query('UPDATE invitations SET state=$1 WHERE id=$2', [state, created.id]);
+    await updateFixtureState(pool, created.id, state);
     const final = succeeds(await b.post(`${guestPath(token)}/actions`, { type: 'finalize', version: created.version, requestId: randomUUID(), proposal: { ...plan.timeOptions[1] } }), 'Select a future slot while retaining an expired unchosen alternative').invitation;
     assert.equal(final.proposal.date, plan.timeOptions[1].date);
     assert.equal(final.proposal.timeOptions[0].date, '2000-01-01', 'The originally offered range remains intact');
     assert.deepEqual(final.approvals, { host: final.version, guest: final.version });
+  });
+
+  await t.test('calendar HTTP contract keeps guests anonymous and shares confirmed occupancy across roles', async () => {
+    fails(await anonymous.get('/api/schedule'), 401, 'A personal calendar requires an account');
+    fails(await anonymous.post('/api/schedule', { schedule: {} }), 401, 'An anonymous request cannot replace a calendar');
+    const schedule = {
+      timeZone: 'Asia/Shanghai',
+      weekly: Object.fromEntries(Array.from({ length: 7 }, (_, day) => [day, [{ start: '18:00', end: '23:00' }]])),
+      overrides: { [futureDate(25)]: [] },
+    };
+    succeeds(await a.post('/api/schedule', { schedule }), 'Save weekly hours and a date-specific day off');
+    const ownCalendar = succeeds(await a.get('/api/schedule'), 'Read private calendar');
+    assert.equal(ownCalendar.schedule.configured, true);
+    assert.deepEqual(ownCalendar.schedule.overrides, schedule.overrides);
+    assert.equal(succeeds(await c.get('/api/schedule'), 'C has independent settings').schedule.configured, false);
+
+    const draft = { from: 'A', to: 'B', tone: 'playful', message: '选个空闲的晚上见吧。', mode: 'open', timeZone: 'Asia/Shanghai', timePolicy: 'schedule', durationMinutes: 120 };
+    const created = succeeds(await a.post('/api/invitations', { draft, requestId: randomUUID() }), 'Create a calendar invitation').invitation;
+    const token = new URL(created.shareUrl).pathname.split('/').at(-1);
+    const guestActions = `${guestPath(token)}/actions`, hostActions = `${ownerPath(created.id)}/actions`;
+    const availability = succeeds(await b.get(`${guestPath(token)}/availability`), 'Guest can read available times without signing in');
+    assert.equal(availability.durationMinutes, 120);
+    assert.equal(availability.timeZone, 'Asia/Shanghai');
+    assert.ok(availability.slots.some(slot => slot.date === futureDate(21) && slot.time === '19:00'));
+    assert.ok(!availability.slots.some(slot => slot.date === futureDate(25)), 'A date override closes that day');
+    assert.ok(!availability.slots.some(slot => slot.time === '21:30'), 'A two-hour date must fit completely');
+    assert.ok(!JSON.stringify(availability).includes(userA.id));
+    assert.ok(!JSON.stringify(availability).includes(userA.email));
+    fails(await c.get(`${ownerPath(created.id)}/availability`), 404, 'Foreign account cannot inspect owner route');
+    const plan = { timeOptions: [{ date: futureDate(21), time: '19:00' }, { date: futureDate(22), time: '19:00' }], placeOptions: ['公园门口'], activities: ['散个步'], preferences: { hints: [], details: { '散个步': [] } } };
+    fails(await b.post(guestActions, { type: 'respond', version: created.version, requestId: randomUUID(), proposal: { ...plan, timeOptions: [{ date: futureDate(25), time: '19:00' }] } }), 409, 'A forged response cannot bypass closed hours');
+    const pending = succeeds(await b.post(guestActions, { type: 'respond', version: created.version, requestId: randomUUID(), proposal: plan }), 'Submit two candidate times').invitation;
+    assert.equal(pending.booking, null, 'Candidate ranges reserve no time');
+    assert.equal(succeeds(await b.get('/api/session'), 'Guest remains anonymous').user, null);
+    fails(await b.post(`${guestPath(token)}/bind`, {}), 401, 'Binding alone requires an account');
+    fails(await a.post(`${guestPath(token)}/bind`, {}), 422, 'Host preview cannot bind the host as their own guest');
+    assert.equal(succeeds(await c.get(guestPath(token)), 'A signed-in guest reading the link').invitation.calendarBound, false, 'Reading a link never silently binds an account');
+    const bound = succeeds(await c.post(`${guestPath(token)}/bind`, {}), 'C explicitly joins their calendar').invitation;
+    assert.equal(bound.calendarBound, true);
+    assert.equal(bound.booking, null);
+
+    const parallel = succeeds(await a.post('/api/invitations', { draft, requestId: randomUUID() }), 'Another pending invite may offer the same candidates').invitation;
+    const parallelToken = new URL(parallel.shareUrl).pathname.split('/').at(-1);
+    const parallelPending = succeeds(await d.post(`${guestPath(parallelToken)}/actions`, { type: 'respond', version: parallel.version, requestId: randomUUID(), proposal: plan }), 'Second guest selects overlapping candidates').invitation;
+    const final = succeeds(await a.post(hostActions, { type: 'finalize', version: pending.version, requestId: randomUUID(), proposal: { ...plan.timeOptions[0] } }), 'Owner confirms one candidate').invitation;
+    assert.ok(final.booking?.start && final.booking?.end);
+    assert.equal(Date.parse(final.booking.end) - Date.parse(final.booking.start), 120 * 60_000);
+    const receivedCalendar = succeeds(await c.get('/api/schedule'), 'Bound received invite appears on guest calendar');
+    const received = receivedCalendar.bookings.find(item => item.invitationId === final.id);
+    assert.equal(received?.role, 'guest');
+    assert.equal(received.guestUrl, created.shareUrl);
+    fails(await a.post(`${ownerPath(parallel.id)}/actions`, { type: 'finalize', version: parallelPending.version, requestId: randomUUID(), proposal: { ...plan.timeOptions[0] } }), 409, 'A stale candidate cannot double-book the host');
+    assert.equal((await getOwner(a, parallel.id)).version, parallelPending.version, 'Failed confirmation leaves consent unchanged');
+    const remaining = succeeds(await d.get(`${guestPath(parallelToken)}/availability`), 'Availability reflects a different invite confirmation');
+    assert.equal(remaining.candidateSlots[0].available, false);
+    assert.equal(remaining.candidateSlots[1].available, true);
+    const busy = { date: plan.timeOptions[0].date, time: '20:00', durationMinutes: 60, label: '自己留一点时间', requestId: randomUUID() };
+    fails(await c.post('/api/schedule/busy', busy), 409, 'Received bookings also block the bound account');
+
+    const change = succeeds(await a.post(hostActions, { type: 'propose', version: final.version, requestId: randomUUID(), proposal: { date: futureDate(23), time: '19:00', place: '新集合点' } }), 'Propose another date').invitation;
+    assert.deepEqual(change.booking, final.booking, 'A pending reschedule retains the confirmed slot');
+    const changed = succeeds(await b.post(guestActions, { type: 'confirm', version: change.version, requestId: randomUUID() }), 'Anonymous counterpart accepts the changed date').invitation;
+    assert.equal(changed.booking.date, futureDate(23));
+    assert.notEqual(changed.booking.start, final.booking.start);
+    const cancellation = { type: 'cancel', version: changed.version, requestId: randomUUID() };
+    const cancelledResponse = await a.post(hostActions, cancellation);
+    const cancelled = succeeds(cancelledResponse, 'Cancel an accepted invitation from management').invitation;
+    assert.equal(cancelled.closed, 'cancelled');
+    assert.equal(cancelled.booking, null);
+    assert.deepEqual(await a.post(hostActions, cancellation), cancelledResponse, 'Cancellation replay is idempotent');
+    assert.ok(!succeeds(await c.get('/api/schedule'), 'Cancelled invite releases both calendars').bookings.some(item => item.invitationId === final.id));
+    const withBusy = succeeds(await c.post('/api/schedule/busy', busy), 'A released slot accepts a manual busy interval');
+    const manual = withBusy.busy.find(item => item.label === busy.label);
+    assert.ok(manual?.id);
+    fails(await a.post(`/api/schedule/busy/${manual.id}/remove`, {}), 404, 'Another owner cannot remove a busy interval');
+    succeeds(await c.post(`/api/schedule/busy/${manual.id}/remove`, {}), 'Remove own manual busy interval');
+    const retriedBusy = succeeds(await c.post('/api/schedule/busy', busy), 'A lost-response retry does not recreate a removed busy interval');
+    assert.ok(!retriedBusy.busy.some(item => item.id === manual.id));
   });
 
   await t.test('sign-out invalidates both the browser cookie and the server session while C remains signed in', async () => {
@@ -631,7 +732,7 @@ test('PostgreSQL + HTTP: authentication, invitation ownership, guest capabilitie
     const replayedSession = clientFor(origin, oldCookie);
     assert.equal(succeeds(await replayedSession.get('/api/session'), 'old cookie replay after sign-out').user, null);
     fails(await replayedSession.get('/api/invitations'), 401, 'invalidated old cookie cannot list invitations');
-    assert.equal(succeeds(await c.get('/api/session'), 'C unaffected session').user.email, 'c@example.test');
+    assert.equal(succeeds(await c.get('/api/session'), 'C unaffected session').user.email, emailC);
     succeeds(await c.post('/api/auth/sign-out', {}), 'C signs out');
   });
 });

@@ -1907,10 +1907,91 @@ body[data-audience="guest"] .brand { cursor: default; }
 .card-download-image { display:flex;justify-content:center;gap:6px;margin:14px auto 0; }
 .card-save-tip { line-height:1.7; }
 .card-save-modal #card-share-status:empty { display:none; }
+/* A personal calendar, with the same quiet paper-and-ink feel as invitations. */
+select { width:100%; min-width:0; padding:13px 12px; border:1px solid #bea9b0; border-radius:7px; background:#fffdfa; color:var(--ink); font:inherit; }
+select:focus-visible, .availability-day:focus-visible, .availability-slot:focus-visible { outline:3px solid #608265; outline-offset:3px; }
+.note-box .text-btn { display:block; margin-top:10px; }
+.calendar-wrap { max-width:1060px; margin:42px auto 70px; padding:0 24px; }
+.calendar-wrap .list-head { margin-bottom:26px; }
+.calendar-wrap .sub { margin:10px 0 0; }
+.calendar-back { margin-bottom:22px; }
+.calendar-layout { display:grid; grid-template-columns:minmax(0,1.35fr) minmax(290px,.85fr); gap:26px; align-items:start; }
+.calendar-editor,.calendar-agenda { min-width:0; display:grid; gap:20px; }
+.calendar-panel { padding:25px; background:#fffdfa; border:1px solid #dfcdd3; border-radius:15px; box-shadow:0 4px 18px #78536506; }
+.calendar-panel h2 { font-size:21px; margin:0 0 12px; }
+.calendar-panel > .hint { margin-bottom:22px; }
+.calendar-panel .field { margin-bottom:15px; }
+.calendar-panel input, .calendar-panel select { padding:10px 9px; font-size:13px; min-width:0; }
+.calendar-week { display:grid; }
+.calendar-day { display:grid; grid-template-columns:48px minmax(0,1fr); gap:15px; align-items:start; padding:15px 0; border-top:1px dashed #e5d7dc; }
+.calendar-day > strong { padding-top:12px; font-size:13px; font-weight:500; }
+.calendar-intervals { display:grid; gap:9px; min-width:0; }
+.calendar-interval { display:grid; grid-template-columns:minmax(0,1fr) auto minmax(0,1fr) 24px; gap:8px; align-items:center; }
+.calendar-interval > span { color:#8e7980; font-size:12px; }
+.calendar-interval .text-btn { padding:0; font-size:22px; min-height:36px; }
+.calendar-add-time { font-size:11px; justify-self:start; }
+.calendar-day-off { padding:12px 0 3px; font-size:12px; color:#8e7980; }
+.calendar-all-day { display:flex; align-items:center; gap:9px; margin:0 0 16px; font-size:13px; }
+.calendar-all-day input[type="checkbox"] { width:17px; height:17px; min-height:17px; padding:0; margin:0; accent-color:#608265; }
+.calendar-panel input:disabled { background:#f1eeeb; color:#8e7980; opacity:.6; }
+.calendar-warning .text-btn { display:block; margin-top:9px; font-size:12px; }
+.calendar-date-add { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px; align-items:center; }
+.calendar-date-add .btn { font-size:12px; padding:11px 13px; }
+.calendar-override { border-top:1px dashed #dfcdd3; margin-top:20px; padding-top:17px; }
+.calendar-override-heading { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:12px; font-size:12px; }
+.calendar-override-heading .text-btn { font-size:10px; }
+.calendar-save { display:flex; justify-content:space-between; align-items:center; gap:16px; padding:0 4px; }
+.calendar-save .hint { max-width:180px; margin:0; }
+.calendar-agenda-row { display:grid; gap:8px; padding:19px 0; border-top:1px dashed #dfcdd3; font-size:12px; }
+.calendar-agenda-row:first-of-type { margin-top:20px; }
+.calendar-agenda-row strong { font-size:14px; font-weight:500; }
+.calendar-agenda-row span,.calendar-agenda-row small { color:#8e7980; font-size:11px; line-height:1.65; }
+.calendar-agenda-row .text-btn { justify-self:start; font-size:11px; }
+.calendar-empty { padding:25px 9px; color:#8e7980; font-size:12px; line-height:1.9; text-align:center; }
+.calendar-warning { padding:16px 20px; margin:0 0 24px; border:1px solid #bd997e; border-radius:10px; background:#fff4e6; font-size:13px; line-height:1.8; }
+.availability-picker { margin:20px 0; text-align:left; }
+.availability-heading { display:flex; justify-content:space-between; align-items:center; gap:8px; color:#8e7980; font-size:10px; margin-bottom:14px; }
+.availability-heading .text-btn { font-size:11px; }
+.availability-days { display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); gap:6px; }
+.availability-day { position:relative; display:grid; gap:5px; justify-items:center; padding:9px 1px; border:1px solid #d7c3cc; background:#fffdfa; color:var(--ink); border-radius:8px; min-height:53px; }
+.availability-day small { font-size:9px; color:#8e7980; }
+.availability-day b { font-size:11px; font-weight:500; }
+.availability-day i { position:absolute; right:2px; top:0; font-size:9px; color:#a75576; font-style:normal; }
+.availability-day.selected,.availability-slot.selected { border-color:var(--ink); background:#fce2ed; box-shadow:2px 2px var(--ink); }
+.availability-day:disabled { opacity:.35; cursor:default; background:#f5f0ec; }
+.availability-date-label { font-size:12px; margin:22px 0 12px; }
+.availability-slots { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; }
+.availability-slot { padding:10px 4px; border:1px solid #c7aab6; border-radius:7px; background:#fffdfa; font-size:12px; color:var(--ink); }
+.availability-selected { display:flex; flex-wrap:wrap; gap:8px; margin-top:20px; }
+.availability-selected > span { display:flex; align-items:center; gap:7px; padding:6px 9px; border-radius:7px; background:#eaf0e5; font-size:10px; line-height:1.5; }
+.availability-selected > span.unavailable { background:#fae5e6; }
+.availability-selected button { background:none; border:0; padding:0 3px; font-size:16px; color:inherit; }
+.availability-picker > .hint { margin-top:16px; font-size:11px; }
+.host-activity-choice:disabled,.scene-time-option:disabled { opacity:.45; cursor:default; box-shadow:none; background:#f1eeeb; }
+.calendar-bind { max-width:430px; margin:25px auto 0; padding:19px 18px 0; text-align:center; border-top:1px dashed #cfb9c3; }
+.calendar-bind p { font-size:11px; color:#8e7980; line-height:1.8; }
+.calendar-bind .text-btn { font-size:12px; }
+.calendar-cancel { font-size:11px; color:#9a848d; margin-top:9px; }
+.retained-booking { margin-top:22px; font-size:12px; }
+.status-label.cancelled { color:#8e7980; }
 @media(max-width:640px) {
   .candidate-row { padding:11px; }
   .candidate-row .columns { grid-template-columns:minmax(0,1.15fr) minmax(0,1fr); gap:8px; }
   .candidate-row input { font-size:16px; padding:10px 7px; }
   .mode-choice { padding:13px 11px; }
   .mode-choice b { font-size:13px; }
+  .calendar-wrap { margin:25px auto 45px; padding:0 18px; }
+  .calendar-layout { grid-template-columns:minmax(0,1fr); gap:24px; }
+  .calendar-panel { padding:20px 17px; }
+  .calendar-panel input,.calendar-panel select { font-size:16px; }
+  .calendar-panel h2 { font-size:19px; }
+  .calendar-day { grid-template-columns:37px minmax(0,1fr); gap:9px; }
+  .calendar-interval { gap:5px; grid-template-columns:minmax(0,1fr) auto minmax(0,1fr) 20px; }
+  .calendar-interval input { padding:8px 4px; }
+  .calendar-save { align-items:flex-start; }
+  .calendar-save .btn { white-space:nowrap; }
+  .availability-days { gap:4px; }
+  .availability-day b { font-size:10px; }
+  .availability-slot { font-size:11px; }
+  .site-header .nav { row-gap:10px; }
 }

@@ -60,7 +60,7 @@ async function senderFixture() {
       } };
     },
   });
-  for (const name of ["model", "runaway", "journey", "api-client", "account", "card-export", "app"]) vm.runInContext(source(name), context);
+  for (const name of ["model", "runaway", "journey", "api-client", "account", "card-export", "schedule", "app"]) vm.runInContext(source(name), context);
   await new Promise(setImmediate);
   await new Promise(setImmediate);
   vm.runInContext(`
@@ -76,6 +76,8 @@ async function senderFixture() {
     loginOtp = "123456";
     otpSent = true;
     mailboxEmails = [{email:loginEmail,otp:loginOtp}];
+    calendarData = {busy:[{label:"私人的安排"}]}; calendarDraft = {timeZone:"Asia/Shanghai"};
+    availabilityData = {slots:[{date:"2099-10-08",time:"18:30"}]}; availabilityInvitationId = currentId;
   `, context);
   return { context, storage };
 }
@@ -85,8 +87,8 @@ test("logout and expired-session recovery clear identity-scoped state without lo
     await t.test(action, async () => {
       const { context, storage } = await senderFixture();
       await vm.runInContext(`action(${JSON.stringify(action)}, {tagName:"BUTTON"})`, context);
-      const state = JSON.parse(vm.runInContext(`JSON.stringify({sessionUser,invitations,currentId,modal,hostActivitySelection,guestJourney,loginEmail,loginOtp,otpSent,mailboxEmails,view,draft,step})`, context));
-      for (const field of ["sessionUser", "currentId", "modal", "hostActivitySelection", "guestJourney", "mailboxEmails"]) assert.equal(state[field], null, field);
+      const state = JSON.parse(vm.runInContext(`JSON.stringify({sessionUser,invitations,currentId,modal,hostActivitySelection,guestJourney,loginEmail,loginOtp,otpSent,mailboxEmails,calendarData,calendarDraft,availabilityData,availabilityInvitationId,view,draft,step})`, context));
+      for (const field of ["sessionUser", "currentId", "modal", "hostActivitySelection", "guestJourney", "mailboxEmails", "calendarData", "calendarDraft", "availabilityData", "availabilityInvitationId"]) assert.equal(state[field], null, field);
       assert.deepEqual(state.invitations, []);
       assert.equal(state.loginEmail, "");
       assert.equal(state.loginOtp, "");

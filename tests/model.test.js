@@ -57,6 +57,54 @@ test("declined invitation is terminal", () => {
   assert.equal(M.status(x), "declined");
   assert.throws(() => change(x, "host", "confirm"), /结束/);
 });
+
+test("scheduling policy and duration are bounded invitation metadata, never proposal edits", () => {
+  const defaults = M.create(sample);
+  assert.equal(defaults.durationMinutes, 120);
+  assert.equal(defaults.timePolicy, "free");
+  const scheduled = M.create({ mode: "open", durationMinutes: 90, timePolicy: "schedule" });
+  const responded = change(scheduled, "guest", "respond", rangeResponse());
+  const confirmed = change(responded, "host", "finalize", { activity: "吃点好吃的" });
+  assert.equal(confirmed.durationMinutes, 90);
+  assert.equal(confirmed.timePolicy, "schedule");
+  for (const durationMinutes of [null, "120", 0, 29, 31, 721, Infinity, NaN])
+    assert.throws(() => M.create({ ...sample, durationMinutes }), error => error.code === "INVALID_INPUT");
+  for (const durationMinutes of [30, 120, 720])
+    assert.equal(M.create({ ...sample, durationMinutes }).durationMinutes, durationMinutes);
+  for (const patch of [{ timePolicy: "other" }, { timePolicy: null }, { timePolicy: "schedule" }])
+    assert.throws(() => M.create({ ...sample, ...patch }), error => error.code === "INVALID_INPUT");
+  for (const patch of [{ durationMinutes: 60 }, { timePolicy: "free" }]) {
+    assert.throws(() => change(confirmed, "host", "propose", { time: "20:00", ...patch }), error => error.code === "INVALID_INPUT");
+    assert.throws(() => M.transition(confirmed, { role: "host", type: "confirm", version: confirmed.version, ...patch }), error => error.code === "INVALID_INPUT");
+  }
+});
+
+test("either participant may cancel only after a response and cancellation is terminal regardless of date", () => {
+  for (const initial of [M.create(sample), M.create({ mode: "open" }), offered("host")]) {
+    for (const role of ["host", "guest"])
+      assert.throws(() => change(initial, role, "cancel"), error => error.code === "CANCELLATION_NOT_ALLOWED");
+  }
+  const acceptedLegacy = change(M.create({ ...sample, options: [{ date: "2000-01-01", time: "18:00" }] }), "guest", "confirm");
+  // Old snapshots without scheduling metadata remain manageable.
+  delete acceptedLegacy.durationMinutes;
+  delete acceptedLegacy.timePolicy;
+  const openPending = openResponse();
+  const confirmedHost = change(offered("host"), "guest", "finalize", fullSelection());
+  for (const before of [acceptedLegacy, openPending, confirmedHost]) {
+    for (const role of ["host", "guest"]) {
+      const original = structuredClone(before);
+      const cancelled = change(before, role, "cancel");
+      assert.equal(cancelled.closed, "cancelled");
+      assert.equal(M.status(cancelled), "cancelled");
+      assert.equal(cancelled.version, before.version + 1);
+      assert.deepEqual(cancelled.proposal, before.proposal);
+      assert.deepEqual(before, original);
+      for (const type of ["cancel", "confirm", "propose", "respond", "finalize"])
+        assert.throws(() => change(cancelled, role, type, {}), error => error.code === "INVITATION_CLOSED");
+      assert.throws(() => M.transition(cancelled, { role, type: "confirm", version: before.version }), error => error.code === "STALE_VERSION");
+    }
+  }
+});
 test("confirmation is idempotent and does not mutate the original", () => {
   const x = M.create(sample);
   const y = change(x, "guest", "confirm");
