@@ -1,10 +1,10 @@
 # Date Me Maybe · 见一面：后端与部署
 
-v0.5.0 已加入[日程管理](scheduling.md)，需要 `002_scheduling.sql` 和 `003_calendar_writer.sql` 一起迁移。新旧写入切换保护与历史约定回填包含在同一事务内；本轮部署完成前，以下生产状态仍对应 v0.4.0。
+v0.5.0 [日程管理](scheduling.md) 已上线，`002_scheduling.sql` 和 `003_calendar_writer.sql` 已一起迁移。历史约定回填与旧版本写入保护在同一事务内完成；仅回滚应用到 v0.4.0 会被数据库拒绝写入，不是安全的回滚方案。
 
-Express 提供同源页面与 API，Better Auth 1.7.7 管理发起人登录，PostgreSQL 保存认证数据和邀请状态。发起人登录后创建和管理邀请，受邀人通过专属链接免登录回应。当前生产为 v0.4.0；双向范围合同见[双向邀约说明](invitation-modes.md)，下文 v0.3 行为继续适用于历史记录。
+Express 提供同源页面与 API，Better Auth 1.7.7 管理发起人登录，PostgreSQL 保存认证、邀请和日程。发起人登录后创建和管理邀请，受邀人通过专属链接免登录回应，也可主动绑定自己的账户日程。双向范围合同见[双向邀约说明](invitation-modes.md)，下文 v0.3 行为继续适用于历史记录。
 
-v0.4.0 已发布，真实 Resend 邮件登录沿用此前验收结果。[当前发布进度见 README](../README.md#发布状态)。Google 尚未配置。
+v0.5.0 已验证真实 Resend 邮件登录、日程保存、匿名回应、最终确认、跨邀约排除冲突和取消释放。[当前发布进度见 README](../README.md#发布状态)。Google 尚未配置。
 
 ## 本地数据库和配置
 
